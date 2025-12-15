@@ -1,6 +1,6 @@
 /**
  * KIM BOT – SỔ KIM THU HOẠCH RONG BIỂN
- * VERSION: KIM-SO-KIM-v1.2-REPLYMENU-2525-VONGFIX-2025-12-15
+ * VERSION: KIM-SO-KIM-v1.3-EDIT-RECALC-SCHEDULE-2025-12-15
  */
 
 import express from "express";
@@ -10,7 +10,7 @@ import { google } from "googleapis";
 const app = express();
 app.use(express.json());
 
-const VERSION = "KIM-SO-KIM-v1.2-REPLYMENU-2525-VONGFIX-2025-12-15";
+const VERSION = "KIM-SO-KIM-v1.3-EDIT-RECALC-SCHEDULE-2025-12-15";
 console.log("🚀 RUNNING:", VERSION);
 
 /* ================= ENV ================= */
@@ -22,10 +22,9 @@ const GOOGLE_APPLICATION_CREDENTIALS =
 
 const CUT_INTERVAL_DAYS = Number(process.env.CUT_INTERVAL_DAYS || 15);
 const BAO_RATE = 1.4;
-const DELETE_PIN = String(process.env.DELETE_PIN || "2525"); // mã xác nhận xoá
+const DELETE_PIN = String(process.env.DELETE_PIN || "2525");
 
 /* ================= CONFIG ================= */
-// Max dây theo bãi (CHỐT)
 const MAX_DAY = {
   A14: 69,
   A27: 60,
@@ -96,14 +95,12 @@ async function send(chatId, text, extra = {}) {
   });
 }
 
-/**
- * MENU chính nằm dưới ô nhập (Reply Keyboard)
- * -> không cần gõ chữ menu
- */
+/* ================= REPLY MENU ================= */
 const MENU = {
   MONTH: "📅 Thống kê tháng này",
   VONG: "🔁 Thống kê theo VÒNG",
   BAI: "📍 Thống kê theo BÃI",
+  SCHEDULE: "📆 Lịch cắt các bãi",
   LAST: "🧾 Xem dòng gần nhất",
   EDIT: "✏️ Sửa dòng gần nhất",
   DEL: "🗑️ Xoá dòng gần nhất",
@@ -115,13 +112,13 @@ async function setReplyMenu(chatId) {
   const reply_markup = {
     keyboard: [
       [MENU.MONTH, MENU.VONG],
-      [MENU.BAI, MENU.LAST],
-      [MENU.EDIT, MENU.DEL],
-      [MENU.RESET, MENU.HELP],
+      [MENU.BAI, MENU.SCHEDULE],
+      [MENU.LAST, MENU.EDIT],
+      [MENU.DEL, MENU.RESET],
+      [MENU.HELP],
     ],
     resize_keyboard: true,
     one_time_keyboard: false,
-    selective: false,
   };
   await send(chatId, "📌 MENU SỔ KIM (bấm nút để chạy):", { reply_markup });
 }
@@ -160,8 +157,6 @@ function nextCutForecast(lastCleanYmd) {
 
 /* ================= DATA PARSE ================= */
 function parseRowToObj(r) {
-  // A Timestamp, B Date, C Thu, D ViTri, E DayG, F MaxG, G TinhHinh,
-  // H BaoTau, I BaoChuan, J GiaK, K ThuLoWon, L Note
   return {
     ts: r[0] || "",
     date: r[1] || "",
@@ -193,7 +188,6 @@ function rowMonthKey(obj) {
 function parseWorkLine(text) {
   const lower = text.toLowerCase().trim();
 
-  // làm bờ / nghỉ gió
   if (lower.includes("nghỉ gió") || lower.includes("lam bo") || lower.includes("làm bờ")) {
     return { type: "NO_WORK", tinhHinh: lower.includes("nghỉ gió") ? "Nghỉ gió" : "Làm bờ" };
   }
@@ -216,18 +210,15 @@ function parseWorkLine(text) {
   }
 
   if (!b || !k) return null;
-  if (!g) g = MAX_DAY[viTri]; // thiếu g -> cắt sạch
+  if (!g) g = MAX_DAY[viTri];
+
   return { type: "WORK", viTri, g, b, k, d, note };
 }
 
-/* ================= VÒNG LOGIC (FIX THEO YÊU CẦU) =================
-- Vòng của từng bãi: tăng khi có cắt sạch (dayG==maxG)
-- Thống kê theo VÒNG (toàn bộ): lấy TẤT CẢ các dòng CẮT SẠCH của mọi bãi, nhóm theo (vòng của bãi đó) rồi cộng lại
-- Thống kê theo BÃI: hiện vòng 1/2/3... của riêng bãi đó và tổng
-*/
+/* ================= VÒNG ================= */
 function assignVongPerBai(objs) {
   const sorted = [...objs].sort((a,b) => (a.date+a.ts).localeCompare(b.date+b.ts));
-  const done = new Map(); // bai -> số vòng đã cắt sạch
+  const done = new Map();
   return sorted.map(o => {
     if (!o.bai) return { ...o, vong: 0, isClean: false };
     const isClean = o.maxG > 0 && o.dayG === o.maxG;
@@ -263,7 +254,7 @@ async function getLastRow(rows) {
   return null;
 }
 
-/* ================= OUTPUT TEMPLATE (CHUẨN MẪU) ================= */
+/* ================= OUTPUT TEMPLATE ================= */
 async function sendSoKim(chatId, userName, objForCmd, totalToNowWon, vongForCmd, forecast) {
   const dateObj = new Date(objForCmd.date + "T00:00:00");
   const isClean = objForCmd.maxG > 0 && objForCmd.dayG === objForCmd.maxG;
@@ -307,7 +298,6 @@ async function reportMonth(chatId) {
 
   for (const o of objs) {
     if (rowMonthKey(o) !== monthKey) continue;
-
     if (o.won > 0) {
       workDays.add(o.date);
       totalWon += o.won;
@@ -332,8 +322,7 @@ async function reportByVong(chatId) {
   const base = rows.map(parseRowToObj);
   const withV = assignVongPerBai(base);
 
-  // CHỈ lấy các dòng CẮT SẠCH để cộng theo vòng toàn bộ
-  const sumByV = new Map(); // vong -> won
+  const sumByV = new Map();
   for (const o of withV) {
     if (!o.bai || !o.isClean) continue;
     sumByV.set(o.vong, (sumByV.get(o.vong) || 0) + (o.won || 0));
@@ -352,14 +341,12 @@ async function reportByBai(chatId) {
   const base = rows.map(parseRowToObj);
   const withV = assignVongPerBai(base);
 
-  // bai -> map vong -> won (chỉ cắt sạch)
   const map = new Map();
-
   for (const o of withV) {
     if (!o.bai) continue;
     if (!map.has(o.bai)) map.set(o.bai, { vongs: new Map(), total: 0, lastClean: "" });
-    const cur = map.get(o.bai);
 
+    const cur = map.get(o.bai);
     if (o.isClean) {
       cur.vongs.set(o.vong, (cur.vongs.get(o.vong) || 0) + (o.won || 0));
       cur.total += (o.won || 0);
@@ -375,9 +362,39 @@ async function reportByBai(chatId) {
     const vongs = [...v.vongs.entries()].sort((a,b)=>a[0]-b[0])
       .map(([vv, won]) => `V${vv}: ${won.toLocaleString()} ₩`).join(" | ");
     const forecast = nextCutForecast(v.lastClean);
+
     out += `\n• ${bai}: ${vongs || "(chưa có vòng)"}\n  Tổng: ${v.total.toLocaleString()} ₩`;
     if (forecast) out += `\n  ⤷ Dự báo cắt lại: ${forecast}`;
     out += "\n";
+  }
+  await send(chatId, out.trim());
+}
+
+async function reportScheduleAll(chatId) {
+  const rows = await getRows();
+  const base = rows.map(parseRowToObj);
+
+  // lấy ngày cắt sạch gần nhất cho mỗi bãi
+  const lastCleanByBai = {};
+  for (const bai of Object.keys(MAX_DAY)) lastCleanByBai[bai] = "";
+
+  const sorted = [...base].sort((a,b)=> (a.date+a.ts).localeCompare(b.date+b.ts));
+  for (const o of sorted) {
+    if (!o.bai) continue;
+    const isClean = o.maxG > 0 && o.dayG === o.maxG;
+    if (isClean) lastCleanByBai[o.bai] = o.date;
+  }
+
+  let out = `📆 LỊCH CẮT DỰ KIẾN (tất cả bãi)\n(Theo lần CẮT SẠCH gần nhất + ${CUT_INTERVAL_DAYS} ngày)\n`;
+  const order = Object.keys(MAX_DAY); // giữ đúng thứ tự cấu hình
+  for (const bai of order) {
+    const last = lastCleanByBai[bai];
+    if (!last) {
+      out += `\n• ${bai}: (chưa có dữ liệu cắt sạch)`;
+      continue;
+    }
+    const next = nextCutForecast(last);
+    out += `\n• ${bai}: ${next}`;
   }
   await send(chatId, out.trim());
 }
@@ -412,14 +429,12 @@ nghỉ gió
 làm bờ
 
 🗑️ Xoá:
-Bấm nút xoá → bot sẽ hỏi mã ${DELETE_PIN}.`
+Bấm nút xoá → nhập mã ${DELETE_PIN}.`
   );
 }
 
-/* ================= DELETE CONFIRM STATE =================
-Dùng bộ nhớ RAM (Render restart thì mất, nhưng đủ dùng).
-*/
-const pending = new Map(); // chatId -> { type: "DEL_LAST"|"RESET_ALL", at: ms }
+/* ================= DELETE CONFIRM STATE ================= */
+const pending = new Map(); // chatId -> { type, at }
 
 function askPin(chatId, type) {
   pending.set(String(chatId), { type, at: Date.now() });
@@ -429,7 +444,6 @@ function askPin(chatId, type) {
 function checkPin(chatId, text) {
   const p = pending.get(String(chatId));
   if (!p) return null;
-  // hết hạn 2 phút
   if (Date.now() - p.at > 2 * 60 * 1000) {
     pending.delete(String(chatId));
     return null;
@@ -447,13 +461,12 @@ async function handleTextMessage(msg) {
   const userName = msg.from?.first_name || "Bạn";
   const textRaw = (msg.text || "").trim();
 
-  // luôn set menu khi /start hoặc lần đầu
   if (textRaw === "/start") {
     await setReplyMenu(chatId);
     return;
   }
 
-  // nếu đang chờ nhập mã xoá
+  // PIN confirm
   const pinState = checkPin(chatId, textRaw);
   if (pinState === "WRONG") {
     await send(chatId, "❌ Sai mã. Huỷ xoá.");
@@ -473,23 +486,17 @@ async function handleTextMessage(msg) {
     return;
   }
 
-  // MENU clicks (reply keyboard)
+  // MENU clicks
   if (textRaw === MENU.MONTH) return reportMonth(chatId);
   if (textRaw === MENU.VONG) return reportByVong(chatId);
   if (textRaw === MENU.BAI) return reportByBai(chatId);
+  if (textRaw === MENU.SCHEDULE) return reportScheduleAll(chatId);
   if (textRaw === MENU.LAST) return showLastRow(chatId);
   if (textRaw === MENU.HELP) return sendHelp(chatId);
 
-  if (textRaw === MENU.DEL) {
-    await askPin(chatId, "DEL_LAST");
-    return;
-  }
-  if (textRaw === MENU.RESET) {
-    await askPin(chatId, "RESET_ALL");
-    return;
-  }
+  if (textRaw === MENU.DEL) return askPin(chatId, "DEL_LAST");
+  if (textRaw === MENU.RESET) return askPin(chatId, "RESET_ALL");
 
-  // Sửa dòng gần nhất: user bấm nút -> bot hướng dẫn
   if (textRaw === MENU.EDIT) {
     await send(chatId,
 `✏️ SỬA DÒNG GẦN NHẤT
@@ -500,7 +507,7 @@ Ví dụ:  sua A27 30g 40b 220k`
     return;
   }
 
-  // sửa: "sua <cú pháp mới>"
+  // EDIT command
   if (textRaw.toLowerCase().startsWith("sua ")) {
     const newLine = textRaw.slice(4).trim();
     const parsed = parseWorkLine(newLine);
@@ -517,7 +524,8 @@ Ví dụ:  sua A27 30g 40b 220k`
 
     const bc = baoChuan(parsed.b);
     const money = bc * parsed.k * 1000;
-    const tinhHinh = parsed.g === MAX_DAY[parsed.viTri] ? "Cắt sạch" : "Chưa sạch";
+    const isClean = parsed.g === MAX_DAY[parsed.viTri];
+    const tinhHinh = isClean ? "Cắt sạch" : "Chưa sạch";
 
     const oldObj = parseRowToObj(rows[rowIdx - 2]);
     const newRow = [
@@ -535,16 +543,50 @@ Ví dụ:  sua A27 30g 40b 220k`
       parsed.note || oldObj.note || "",
     ];
 
+    // update sheet
     await updateRow(rowIdx, newRow);
-    await send(chatId, `✅ Đã sửa dòng gần nhất của ${parsed.viTri}.`);
+
+    // ====== RECALC & SEND FULL SỔ KIM (đúng yêu cầu) ======
+    const rowsAfter = await getRows();
+    const objsAfter = rowsAfter.map(parseRowToObj);
+
+    // total tới thời điểm này = sum toàn DATA (sau sửa)
+    const totalToNow = objsAfter.reduce((s,o)=> s + (o.won || 0), 0);
+
+    // vòng của dòng vừa sửa: đếm số lần cắt sạch của bãi đó theo thời gian
+    const withV = assignVongPerBai(objsAfter);
+    // tìm đúng record vừa sửa bằng ts cũ (ổn nhất)
+    const tsKey = newRow[0];
+    const match = withV.find(o => o.ts === tsKey && o.bai === parsed.viTri);
+    const vongThis = match?.vong || (isClean ? 1 : 1);
+
+    // forecast: lấy lần cắt sạch gần nhất của bãi (sau sửa), nếu dòng này là sạch thì mốc = ngày dòng này
+    let lastClean = "";
+    for (let i = withV.length - 1; i >= 0; i--) {
+      const o = withV[i];
+      if (o.bai === parsed.viTri && o.isClean) { lastClean = o.date; break; }
+    }
+    const forecast = nextCutForecast(isClean ? ymd(workDate) : lastClean);
+
+    await sendSoKim(chatId, userName, {
+      date: ymd(workDate),
+      bai: parsed.viTri,
+      dayG: parsed.g,
+      maxG: MAX_DAY[parsed.viTri],
+      baoTau: parsed.b,
+      baoChuan: bc,
+      giaK: parsed.k,
+      won: money,
+    }, totalToNow, vongThis, forecast);
+
     return;
   }
 
-  // ====== nghiệp vụ nhập 1 dòng ======
+  // WORK parse
   const parsed = parseWorkLine(textRaw);
   if (!parsed) return send(chatId, SYNTAX_ERROR);
 
-  // nghỉ gió / làm bờ
+  // NO_WORK
   if (parsed.type === "NO_WORK") {
     const d = kst();
     await appendRow([
@@ -584,7 +626,6 @@ Ví dụ:  sua A27 30g 40b 220k`
 
   const totalToNow = totalBefore + money;
 
-  const tinhHinh = isClean ? "Cắt sạch" : "Chưa sạch";
   await appendRow([
     new Date().toISOString(),
     ymd(workDate),
@@ -592,7 +633,7 @@ Ví dụ:  sua A27 30g 40b 220k`
     parsed.viTri,
     parsed.g,
     MAX_DAY[parsed.viTri],
-    tinhHinh,
+    isClean ? "Cắt sạch" : "Chưa sạch",
     parsed.b,
     bc,
     parsed.k,
@@ -600,7 +641,7 @@ Ví dụ:  sua A27 30g 40b 220k`
     parsed.note || "",
   ]);
 
-  // forecast dựa trên lần sạch gần nhất (hoặc chính lần này)
+  // forecast
   let lastClean = "";
   for (let i = objs.length - 1; i >= 0; i--) {
     const o = objs[i];
