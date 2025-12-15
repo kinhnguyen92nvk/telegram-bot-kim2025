@@ -1,37 +1,39 @@
 /**
  * ============================================================
- * KIM BOT – SỔ KIM THU HOẠCH RONG BIỂN (FINAL)
- * VERSION: KIM-SO-KIM-v1.5-FINAL-2025-12-15
- * ============================================================
+ * KIM BOT – SỔ KIM THU HOẠCH RONG BIỂN
+ * VERSION: KIM-SO-KIM-v2.0-FINAL-2025-12-15
  *
- * ✅ Parsing:
- *   - "A27 60b 220k"        -> cắt sạch mặc định max dây
- *   - "A27 30g 40b 220k"    -> cắt 30 dây
- *   - "A27 80b 120k 5d"     -> ghi bù ngày dd trong tháng hiện tại
- *   - "nghỉ gió" / "làm bờ" -> ghi tình hình, doanh thu = 0
+ * ✅ FINAL REQUIREMENTS (CHỐT):
+ * 1) Reply keyboard "menu box" Telegram: luôn hiện, bấm là chạy.
+ * 2) Parsing:
+ *    - token đầu: Bãi (A27/A14/34/...)
+ *    - ...b bắt buộc, ...k bắt buộc
+ *    - ...g optional:
+ *        + nếu thiếu => CẮT SẠCH (progress = max)
+ *        + nếu có => CẮT DỠ theo số g (delta) và CỘNG DỒN progress
+ *        + nếu progress đạt max => tự thành CẮT SẠCH
+ *    - ...d optional: ngày trong tháng (dd) => ghi bù ngày dd/tháng hiện tại
+ *      nếu thiếu => mặc định HÔM QUA
+ *    - "note:" optional => ghi cột Note
+ *    - "nghỉ gió" / "làm bờ" => ghi tình hình, doanh thu = 0
  *
- * ✅ Tính toán:
- *   - Bao chuẩn = round(baoTau * 1.4)
- *   - Doanh thu = baoChuan * (giaK * 1000)
+ * 3) Vòng (Cycle):
+ *    - vòng chỉ tăng khi có CẮT SẠCH
+ *    - mọi dòng trong chu kỳ hiện tại thuộc Vòng (cleanCount + 1)
+ *    - "cắt dỡ" thuộc vòng hiện tại (KHÔNG nhảy vòng)
  *
- * ✅ Vòng:
- *   - Mỗi BÃI có vòng riêng: Vòng tăng khi "cắt sạch" (dayG == maxG)
- *   - Thống kê THEO VÒNG: cộng tổng doanh thu của VÒNG 1 của TẤT CẢ BÃI,
- *     VÒNG 2 của TẤT CẢ BÃI, ... (chỉ tính các vòng ĐÃ KHÉP = đã có cắt sạch)
- *   - Một vòng = toàn bộ các dòng từ sau lần cắt sạch trước đó cho đến dòng cắt sạch.
+ * 4) Output:
+ *    --- 🌊 SỔ KIM (Vòng: X) ---
+ *    Chào <Tên>, đây là kết quả của lệnh bạn gửi
+ *    ... (đúng format)
  *
- * ✅ Menu Telegram:
- *   - Dùng REPLY KEYBOARD (hộp menu cố định của Telegram)
- *   - Không cần gõ "menu"
+ * 5) Delete:
+ *    - Không cần admin
+ *    - Bấm nút "Xóa ..." => Bot yêu cầu nhập 2525
+ *    - Nhập 2525 => thực hiện
  *
- * ✅ Xóa:
- *   - Không cần quyền
- *   - Bấm "🗑️ Xoá dòng gần nhất" hoặc "⚠️ XOÁ SẠCH DỮ LIỆU"
- *     -> Bot yêu cầu nhập 2525 để xác nhận
- *
- * ✅ Sửa:
- *   - "sua <cú pháp mới>" -> sửa dòng gần nhất của bãi đó do người đó nhập
- *   - Sau sửa: tính lại vòng/tổng/lịch cắt và trả lại mẫu SỔ KIM chuẩn
+ * 6) Lịch cắt: theo lần CẮT SẠCH gần nhất + CUT_INTERVAL_DAYS
+ *    - Sort từ ngày gần nhất -> xa nhất
  *
  * ============================================================
  */
@@ -40,21 +42,18 @@ import express from "express";
 import fetch from "node-fetch";
 import { google } from "googleapis";
 
-/* ============================ APP ============================ */
+/* ================== APP ================== */
 const app = express();
 app.use(express.json());
 
-const VERSION = "KIM-SO-KIM-v1.5-FINAL-2025-12-15";
+const VERSION = "KIM-SO-KIM-v2.0-FINAL-2025-12-15";
 console.log("🚀 RUNNING:", VERSION);
 
-/* ============================ ENV ============================ */
+/* ================== ENV ================== */
 const BOT_TOKEN = process.env.BOT_TOKEN;
-if (!BOT_TOKEN) console.warn("⚠️ Missing BOT_TOKEN env!");
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
-if (!GOOGLE_SHEET_ID) console.warn("⚠️ Missing GOOGLE_SHEET_ID env!");
-
 const GOOGLE_APPLICATION_CREDENTIALS =
   process.env.GOOGLE_APPLICATION_CREDENTIALS ||
   "/etc/secrets/google-service-account.json";
@@ -62,13 +61,9 @@ const GOOGLE_APPLICATION_CREDENTIALS =
 const CUT_INTERVAL_DAYS = Number(process.env.CUT_INTERVAL_DAYS || 15);
 const BAO_RATE = 1.4;
 
-// MÃ XÁC NHẬN XÓA
-const DELETE_CODE = "2525";
-// Hết hạn xác nhận (ms)
-const PENDING_TTL_MS = 5 * 60 * 1000;
+const CONFIRM_CODE = "2525"; // ✅ chốt mã xóa
 
-/* ============================ CONFIG ============================ */
-/** Max dây theo bãi (CHỐT) */
+/* ================== CONFIG (MAX DÂY CHỐT) ================== */
 const MAX_DAY = {
   A14: 69,
   A27: 60,
@@ -80,32 +75,17 @@ const MAX_DAY = {
   C12: 59,
 };
 
-/* ============================ BASIC ROUTES ============================ */
-app.get("/", (_, res) => res.send(`KIM BOT OK - ${VERSION}`));
+/* ================== BASIC ROUTES ================== */
+app.get("/", (_, res) => res.send("KIM BOT OK"));
 app.get("/ping", (_, res) => res.json({ ok: true, version: VERSION }));
 
-/* ============================ GOOGLE SHEETS ============================ */
+/* ================== GOOGLE SHEETS ================== */
 const auth = new google.auth.GoogleAuth({
   keyFile: GOOGLE_APPLICATION_CREDENTIALS,
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 const sheets = google.sheets({ version: "v4", auth });
 
-/**
- * Sheet DATA columns A-L:
- * A Timestamp (ISO)
- * B Date (YYYY-MM-DD)
- * C Thu (tên người)
- * D ViTri (bãi)
- * E DayG
- * F MaxG
- * G TinhHinh
- * H BaoTau
- * I BaoChuan
- * J GiaK
- * K Won
- * L Note
- */
 async function getRows() {
   const r = await sheets.spreadsheets.values.get({
     spreadsheetId: GOOGLE_SHEET_ID,
@@ -120,13 +100,6 @@ async function appendRow(row12) {
     range: "DATA!A1",
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [row12] },
-  });
-}
-
-async function clearAllData() {
-  await sheets.spreadsheets.values.clear({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range: "DATA!A2:L",
   });
 }
 
@@ -148,57 +121,58 @@ async function clearRow(rowNumber1Based) {
   });
 }
 
-/* ============================ TELEGRAM HELPERS ============================ */
+async function clearAllData() {
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: GOOGLE_SHEET_ID,
+    range: "DATA!A2:L",
+  });
+}
+
+/* ================== TELEGRAM HELPERS ================== */
 async function tg(method, payload) {
-  const url = `${TELEGRAM_API}/${method}`;
-  const r = await fetch(url, {
+  const resp = await fetch(`${TELEGRAM_API}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return r.json().catch(() => ({}));
+  return resp.json().catch(() => ({}));
 }
 
 async function send(chatId, text, extra = {}) {
-  return tg("sendMessage", { chat_id: chatId, text, ...extra });
+  await tg("sendMessage", { chat_id: chatId, text, ...extra });
 }
 
 /**
- * MENU (Reply Keyboard - hộp menu Telegram)
- * - Thay hết nút cũ bằng nút mới
- * - Người dùng không cần gõ "menu"
+ * ✅ Reply Keyboard = “hộp menu Telegram”
+ * Luôn hiển thị dưới khung chat (không cần gõ menu).
  */
-const MENU_KEYBOARD = {
-  keyboard: [
-    [{ text: "📅 Thống kê tháng này" }, { text: "🔁 Thống kê theo VÒNG" }],
-    [{ text: "📍 Thống kê theo BÃI" }, { text: "📆 Lịch cắt các bãi" }],
-    [{ text: "✏️ Sửa dòng gần nhất" }, { text: "🗑️ Xoá dòng gần nhất" }],
-    [{ text: "⚠️ XOÁ SẠCH DỮ LIỆU" }],
-  ],
-  resize_keyboard: true,
-  one_time_keyboard: false,
-  selective: false,
-};
+function buildMainKeyboard() {
+  return {
+    keyboard: [
+      [{ text: "📅 Thống kê tháng này" }, { text: "🔁 Thống kê theo VÒNG" }],
+      [{ text: "📍 Thống kê theo BÃI" }, { text: "📆 Lịch cắt các bãi" }],
+      [{ text: "✏️ Sửa dòng gần nhất" }, { text: "🗑️ Xóa dòng gần nhất" }],
+      [{ text: "⚠️ XÓA SẠCH DỮ LIỆU" }],
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false,
+    is_persistent: true,
+  };
+}
 
-async function ensureMenu(chatId) {
-  // Gửi “menu trống” để Telegram set keyboard
-  return send(chatId, "📌 Menu Sổ Kim đã sẵn sàng.", {
-    reply_markup: MENU_KEYBOARD,
+/** Gắn keyboard cho chat (gọi mỗi lần bot trả lời cũng được) */
+async function ensureKeyboard(chatId) {
+  await send(chatId, "✅ Menu đã sẵn sàng.", {
+    reply_markup: buildMainKeyboard(),
   });
 }
 
-/* ============================ TIME / FORMAT ============================ */
+/* ================== TIME (KST) ================== */
 function kst(d = new Date()) {
-  // KST = UTC+9
   return new Date(d.getTime() + 9 * 3600 * 1000);
 }
 
-function ymd(d) {
-  // d đã là KST date object => toISOString lấy UTC; nhưng ta đang shift KST trước rồi
-  return d.toISOString().slice(0, 10);
-}
-
-function fmtDayVN(dateObjLocal) {
+function fmtDayVN(d) {
   const days = [
     "Chủ Nhật",
     "Thứ Hai",
@@ -208,47 +182,41 @@ function fmtDayVN(dateObjLocal) {
     "Thứ Sáu",
     "Thứ Bảy",
   ];
-  const d = dateObjLocal;
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return `${days[d.getDay()]}, ${dd}/${mm}`;
+  return `${days[d.getDay()]}, ${String(d.getDate()).padStart(2, "0")}/${String(
+    d.getMonth() + 1
+  ).padStart(2, "0")}`;
+}
+
+function ymd(d) {
+  // d đã là KST date
+  return d.toISOString().slice(0, 10);
 }
 
 function moneyToTrieu(won) {
   // 50,000,000 => 50 triệu
-  return `${Math.round(won / 1_000_000)} triệu`;
+  return `${Math.round(Number(won || 0) / 1_000_000)} triệu`;
 }
 
-function wonFmt(x) {
-  try {
-    return Number(x || 0).toLocaleString();
-  } catch {
-    return String(x || 0);
-  }
-}
-
-/* ============================ PARSE INPUT ============================ */
+/* ================== PARSE INPUT ================== */
 function parseWorkLine(text) {
   const raw = (text || "").trim();
   if (!raw) return null;
 
   const lower = raw.toLowerCase().trim();
 
-  // NO_WORK
+  // nghỉ gió / làm bờ
   if (lower.includes("nghỉ gió") || lower.includes("làm bờ") || lower.includes("lam bo")) {
-    // phân biệt để thống kê
-    if (lower.includes("nghỉ gió")) return { type: "NO_WORK", tinhHinh: "Nghỉ gió" };
-    return { type: "NO_WORK", tinhHinh: "Làm bờ" };
+    return { type: "NO_WORK", tinhHinh: lower.includes("nghỉ gió") ? "Nghỉ gió" : "Làm bờ" };
   }
 
   const parts = raw.split(/\s+/);
-  const viTri = parts[0]?.toUpperCase();
-  if (!viTri || !MAX_DAY[viTri]) return null;
+  const bai = (parts[0] || "").toUpperCase();
+  if (!bai || !MAX_DAY[bai]) return null;
 
-  let g = null,
-    b = null,
-    k = null,
-    d = null;
+  let g = null; // delta g nếu có
+  let b = null;
+  let k = null;
+  let d = null;
   let note = "";
 
   // note:
@@ -269,218 +237,232 @@ function parseWorkLine(text) {
   }
 
   if (!b || !k) return null;
-  if (!g) g = MAX_DAY[viTri];
 
-  return { type: "WORK", viTri, g, b, k, d, note };
+  // g thiếu => hiểu là CẮT SẠCH (progress = max)
+  return { type: "WORK", bai, gDelta: g, b, k, dayInMonth: d, note };
 }
 
 function baoChuan(baoTau) {
   return Math.round(Number(baoTau || 0) * BAO_RATE);
 }
 
-/* ============================ DATA MODEL ============================ */
-function parseRowToObj(r = []) {
+/* ================== DATA MODEL (A-L) ==================
+A Timestamp
+B Date (YYYY-MM-DD)
+C Thu (Name)
+D ViTri (Bai)
+E DayG (progressG sau lệnh)  ✅ QUAN TRỌNG: là TIẾN ĐỘ CỘNG DỒN, không phải delta
+F MaxG
+G TinhHinh ("Cắt sạch" / "Cắt dỡ" / "Nghỉ gió" / "Làm bờ")
+H BaoTau
+I BaoChuan
+J GiaK
+K Won
+L Note
+====================================================== */
+
+function rowToObj(r) {
   return {
-    ts: r[0] || "",
-    date: r[1] || "", // YYYY-MM-DD
-    thu: r[2] || "",
-    bai: r[3] || "",
-    dayG: Number(r[4] || 0),
-    maxG: Number(r[5] || 0),
-    tinhHinh: r[6] || "",
-    baoTau: Number(r[7] || 0),
-    baoChuan: Number(r[8] || 0),
-    giaK: Number(r[9] || 0),
-    won: Number(r[10] || 0),
-    note: r[11] || "",
+    ts: r?.[0] || "",
+    date: r?.[1] || "",
+    thu: r?.[2] || "",
+    bai: r?.[3] || "",
+    dayG: Number(r?.[4] || 0),
+    maxG: Number(r?.[5] || 0),
+    tinhHinh: r?.[6] || "",
+    baoTau: Number(r?.[7] || 0),
+    baoChuan: Number(r?.[8] || 0),
+    giaK: Number(r?.[9] || 0),
+    won: Number(r?.[10] || 0),
+    note: r?.[11] || "",
   };
 }
 
-function sortKey(o) {
-  // Ưu tiên date trước, rồi ts
-  const d = o.date || "0000-00-00";
-  const ts = o.ts || "";
-  return `${d} ${ts}`;
+/* ================== HELPERS: SORT / SEARCH ================== */
+function sortByDateTs(objs) {
+  // stable: date then ts
+  return [...objs].sort((a, b) => (a.date + a.ts).localeCompare(b.date + b.ts));
 }
 
-/* ============================================================
- *  VÒNG LOGIC – FIX CHUẨN
- * ============================================================
- * Mục tiêu:
- *  - Mỗi bãi có vòng riêng
- *  - Một vòng gồm nhiều dòng (cắt 1 phần / nhiều phần)
- *  - Vòng chỉ KHÉP khi có dòng cắt sạch (dayG == maxG)
- *  - Thống kê theo VÒNG: cộng V1 của tất cả bãi, V2 của tất cả bãi...
- *
- * Cách làm:
- *  - Duyệt dữ liệu theo thời gian.
- *  - Với mỗi bãi, tạo "segment" hiện tại (vòng đang diễn ra).
- *  - Mỗi dòng WORK thuộc bãi:
- *      add won vào segment
- *      nếu line là clean => segment đóng lại và gán vongIndex (1..n)
- *  - NO_WORK không thuộc vòng.
- */
-function buildSegmentsAndRunningTotals(objs) {
-  const sorted = [...objs].sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
-
-  // running total (toàn bộ)
-  let runningTotal = 0;
-
-  // segments per bai
-  const stateByBai = new Map();
-  // all closed segments
-  const closedSegments = []; // {bai, vong, won, startKey, endKey, endDate}
-  // annotate each row with: idx, runningTotalAfter, vongThisRow, isClean
-  const annotated = [];
-
-  function getState(bai) {
-    if (!stateByBai.has(bai)) {
-      stateByBai.set(bai, {
-        bai,
-        done: 0, // số vòng đã khép
-        openWon: 0,
-        openStartKey: null,
-      });
-    }
-    return stateByBai.get(bai);
-  }
-
-  for (let i = 0; i < sorted.length; i++) {
-    const o = sorted[i];
-
-    runningTotal += Number(o.won || 0);
-
-    let vongThisRow = 0;
-    let isClean = false;
-
-    if (o.bai && MAX_DAY[o.bai]) {
-      // chỉ xét "WORK" theo format DATA (tinhHinh = Cắt sạch/Chưa sạch)
-      const isWorkRow = (o.tinhHinh || "").toLowerCase().includes("cắt") || (o.tinhHinh || "").toLowerCase().includes("chưa");
-      // nhưng cũng an toàn: nếu có baoTau / giaK / won >0 thì coi là work
-      const looksWork = o.won > 0 || o.baoTau > 0 || o.giaK > 0;
-
-      if (isWorkRow || looksWork) {
-        const st = getState(o.bai);
-        if (!st.openStartKey) st.openStartKey = sortKey(o);
-
-        st.openWon += Number(o.won || 0);
-
-        isClean = o.maxG > 0 && o.dayG === o.maxG;
-        if (isClean) {
-          // đóng vòng
-          const vong = st.done + 1;
-          closedSegments.push({
-            bai: o.bai,
-            vong,
-            won: st.openWon,
-            startKey: st.openStartKey,
-            endKey: sortKey(o),
-            endDate: o.date || "",
-          });
-          st.done += 1;
-          // reset mở vòng mới
-          st.openWon = 0;
-          st.openStartKey = null;
-          vongThisRow = vong;
-        } else {
-          // đang ở vòng (done+1)
-          vongThisRow = Math.max(1, st.done + 1);
-        }
-      }
-    }
-
-    annotated.push({
-      ...o,
-      __idx: i,
-      __runningTotalAfter: runningTotal,
-      __vongThisRow: vongThisRow,
-      __isClean: isClean,
-    });
-  }
-
-  return {
-    sorted,
-    annotated,
-    closedSegments,
-    runningTotalAll: runningTotal,
-  };
+function isWorkRow(o) {
+  return !!o.bai && o.maxG > 0;
 }
 
-/* ============================ FORECAST ============================ */
-function addDaysToDate(ymdStr, days) {
-  if (!ymdStr) return null;
-  const d = new Date(`${ymdStr}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return null;
-  const next = new Date(d.getTime() + days * 86400000);
-  const dd = String(next.getDate()).padStart(2, "0");
-  const mm = String(next.getMonth() + 1).padStart(2, "0");
-  const yyyy = next.getFullYear();
-  return { dateObj: next, ddmmyyyy: `${dd}/${mm}/${yyyy}` };
+function isCleanRow(o) {
+  return isWorkRow(o) && Number(o.dayG) === Number(o.maxG);
 }
 
 /**
- * Lấy ngày cắt sạch gần nhất của 1 bãi từ dữ liệu (đã sort),
- * nếu không có => null
+ * Lấy trạng thái bãi:
+ * - cleanDone: số lần cắt sạch đã hoàn thành
+ * - progress: tiến độ hiện tại trong vòng (0..max)
+ * - lastCleanDate: ngày cắt sạch gần nhất
  */
-function lastCleanDateForBai(annotated, bai) {
-  for (let i = annotated.length - 1; i >= 0; i--) {
-    const o = annotated[i];
-    if (o.bai === bai && o.__isClean) return o.date || null;
+function computeBaiState(allObjs, bai) {
+  const max = MAX_DAY[bai] || 0;
+
+  const sorted = sortByDateTs(allObjs).filter((o) => o.bai === bai);
+  let cleanDone = 0;
+  let progress = 0;
+  let lastCleanDate = "";
+
+  for (const o of sorted) {
+    // chỉ tính dòng work của bãi
+    if (!isWorkRow(o)) continue;
+
+    // nếu clean => đóng vòng, reset progress
+    if (Number(o.dayG) >= max && max > 0) {
+      cleanDone += 1;
+      progress = 0; // reset sau khi sạch
+      lastCleanDate = o.date || lastCleanDate;
+    } else {
+      // cắt dỡ: progress là tiến độ đã lưu ở cột dayG
+      progress = Math.min(Number(o.dayG || 0), max);
+    }
   }
-  return null;
+
+  const currentVong = Math.max(1, cleanDone + 1);
+
+  return { bai, max, cleanDone, currentVong, progress, lastCleanDate };
 }
 
-/* ============================ FIND ROW INDEX ============================ */
-async function findLastRowIndexAny(rows) {
+/**
+ * Gán vòng cho từng dòng (toàn bộ DATA):
+ * - vòng của một dòng = cleanCountBefore + 1
+ * - cleanCountBefore tăng khi gặp dòng CẮT SẠCH
+ * - cắt dỡ vẫn thuộc vòng hiện tại (không nhảy vòng)
+ */
+function assignVongAll(objs) {
+  const sorted = sortByDateTs(objs);
+  const doneMap = new Map(); // bai -> cleanDone
+  const out = [];
+
+  for (const o of sorted) {
+    if (!isWorkRow(o)) {
+      out.push({ ...o, vong: 0 });
+      continue;
+    }
+
+    const bai = o.bai;
+    const max = MAX_DAY[bai] || o.maxG || 0;
+    const done = doneMap.get(bai) || 0;
+
+    const vong = Math.max(1, done + 1);
+
+    // nếu dòng này là clean => sau dòng này tăng done
+    const clean = max > 0 && Number(o.dayG) >= Number(max);
+
+    out.push({ ...o, vong, isClean: clean });
+
+    if (clean) doneMap.set(bai, done + 1);
+  }
+
+  return out;
+}
+
+/* ================== FORECAST ================== */
+function addDaysYmd(ymdStr, days) {
+  if (!ymdStr) return "";
+  const d = new Date(`${ymdStr}T00:00:00`);
+  const next = new Date(d.getTime() + Number(days) * 86400000);
+  const dd = String(next.getDate()).padStart(2, "0");
+  const mm = String(next.getMonth() + 1).padStart(2, "0");
+  const yyyy = next.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+function forecastForBai(state) {
+  if (!state?.lastCleanDate) return ""; // chưa có sạch
+  return addDaysYmd(state.lastCleanDate, CUT_INTERVAL_DAYS);
+}
+
+/* ================== OUTPUT TEMPLATE ================== */
+function buildSaiCuPhapText() {
+  return (
+    "❌ Nhập sai rồi bạn iu ơi 😅\n" +
+    "Ví dụ:\n" +
+    "A27 60b 220k\n" +
+    "A27 30g 40b 220k\n" +
+    "A27 80b 120k 5d"
+  );
+}
+
+async function sendSoKim({
+  chatId,
+  userName,
+  vong,
+  dateYmd,
+  bai,
+  progressG,
+  maxG,
+  tinhHinh,
+  baoTau,
+  baoChuanX,
+  giaK,
+  won,
+  totalToNow,
+  forecast,
+}) {
+  const dateObj = new Date(`${dateYmd}T00:00:00`);
+
+  const text =
+`--- 🌊 SỔ KIM (Vòng: ${vong}) ---
+Chào ${userName}, đây là kết quả của lệnh bạn gửi
+
+📅 Ngày: ${fmtDayVN(dateObj)}
+📍 Vị trí: ${bai}
+✂️ Tình hình: ${tinhHinh} (${progressG}/${maxG} dây)
+📦 Sản lượng: ${baoTau} bao lớn (≈ ${baoChuanX} bao tính tiền)
+💰 Giá: ${giaK}k
+
+💵 THU HÔM NAY: ${Number(won).toLocaleString()} ₩
+🏆 TỔNG THU TỚI THỜI ĐIỂM NÀY: ${moneyToTrieu(totalToNow)} ₩
+----------------------------------
+${forecast ? `(Dự báo nhanh: Bãi này sẽ cắt lại vào ${forecast})` : ""}`.trim();
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
+}
+
+/* ================== CONFIRM DELETE STATE (2525) ================== */
+const pendingConfirm = new Map();
+/**
+ * pendingConfirm.set(chatId, { action: "RESET"|"DEL_LAST", expiresAt })
+ */
+function setPending(chatId, action) {
+  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 phút
+  pendingConfirm.set(String(chatId), { action, expiresAt });
+}
+function getPending(chatId) {
+  const p = pendingConfirm.get(String(chatId));
+  if (!p) return null;
+  if (Date.now() > p.expiresAt) {
+    pendingConfirm.delete(String(chatId));
+    return null;
+  }
+  return p;
+}
+function clearPending(chatId) {
+  pendingConfirm.delete(String(chatId));
+}
+
+/* ================== FIND / EDIT / DELETE ================== */
+function findLastRowIndexAny(rows) {
   for (let i = rows.length - 1; i >= 0; i--) {
-    const o = parseRowToObj(rows[i]);
+    const o = rowToObj(rows[i]);
     if (o.ts || o.date || o.thu || o.bai || o.tinhHinh) return 2 + i;
   }
   return null;
 }
 
-async function findLastWorkRowIndexForUserAndBai(rows, userName, bai) {
+function findLastWorkRowIndexForUserAndBai(rows, userName, bai) {
   for (let i = rows.length - 1; i >= 0; i--) {
-    const o = parseRowToObj(rows[i]);
-    if (o.thu === userName && o.bai === bai && Number(o.won || 0) >= 0) {
-      // cả work lẫn 0, nhưng bãi phải có
-      return 2 + i;
-    }
+    const o = rowToObj(rows[i]);
+    if (o.thu === userName && o.bai === bai && isWorkRow(o)) return 2 + i;
   }
   return null;
 }
 
-/* ============================ OUTPUT TEMPLATE ============================ */
-function buildSoKimMessage(userName, objForThisCmd, totalToNowWon, vongForThisCmd, forecastDDMMYYYY) {
-  const dateObj = new Date(`${objForThisCmd.date}T00:00:00`);
-  const header =
-`--- 🌊 SỔ KIM (Vòng: ${vongForThisCmd}) ---
-Chào ${userName}, đây là kết quả của lệnh bạn gửi`.trim();
-
-  const body =
-`
-📅 Ngày: ${fmtDayVN(dateObj)}
-📍 Vị trí: ${objForThisCmd.bai}
-✂️ Tình hình: ${objForThisCmd.tinhText} (${objForThisCmd.dayG}/${objForThisCmd.maxG} dây)
-📦 Sản lượng: ${objForThisCmd.baoTau} bao lớn (≈ ${objForThisCmd.baoChuan} bao tính tiền)
-💰 Giá: ${objForThisCmd.giaK}k
-
-💵 THU HÔM NAY: ${wonFmt(objForThisCmd.won)} ₩
-🏆 TỔNG THU TỚI THỜI ĐIỂM NÀY: ${moneyToTrieu(totalToNowWon)} ₩
-----------------------------------
-${forecastDDMMYYYY ? `(Dự báo nhanh: Bãi này sẽ cắt lại vào ${forecastDDMMYYYY})` : ""}`.trim();
-
-  return `${header}\n${body}`.trim();
-}
-
-const WRONG_SYNTAX_TEXT =
-`❌ Nhập sai rồi bạn iu ơi 😅
-Ví dụ:
-A27 60b 220k
-A27 30g 40b 220k
-A27 80b 120k 5d`.trim();
-
-/* ============================ REPORTS ============================ */
+/* ================== MENU ACTIONS ================== */
 function currentMonthKeyKST() {
   const now = kst();
   const y = now.getUTCFullYear();
@@ -488,20 +470,13 @@ function currentMonthKeyKST() {
   return `${y}-${m}`;
 }
 function rowMonthKey(o) {
-  if (!o.date || o.date.length < 7) return "";
+  if (!o?.date || o.date.length < 7) return "";
   return o.date.slice(0, 7);
 }
 
-/**
- * Thống kê tháng:
- * - Số ngày làm: số ngày có won>0
- * - Nghỉ gió: số ngày có dòng "Nghỉ gió"
- * - Làm bờ: số ngày có dòng "Làm bờ"
- * - Tổng doanh thu tháng: sum won theo tháng
- */
 async function reportMonth(chatId) {
   const rows = await getRows();
-  const objs = rows.map(parseRowToObj);
+  const objs = rows.map(rowToObj);
   const monthKey = currentMonthKeyKST();
 
   const workDays = new Set();
@@ -517,8 +492,8 @@ async function reportMonth(chatId) {
       totalWon += o.won;
     } else {
       const t = (o.tinhHinh || "").toLowerCase();
-      if (t.includes("nghỉ gió")) windDays.add(o.date || "");
-      if (t.includes("làm bờ") || t.includes("lam bờ") || t.includes("lam bo")) shoreDays.add(o.date || "");
+      if (t.includes("nghỉ gió")) windDays.add(o.date);
+      if (t.includes("làm bờ") || t.includes("lam bo")) shoreDays.add(o.date);
     }
   }
 
@@ -527,449 +502,469 @@ async function reportMonth(chatId) {
 • Số ngày làm: ${workDays.size}
 • Nghỉ gió: ${windDays.size} ngày
 • Làm bờ: ${shoreDays.size} ngày
-• Tổng doanh thu tháng: ${wonFmt(totalWon)} ₩`.trim();
+• Tổng doanh thu tháng: ${Number(totalWon).toLocaleString()} ₩`.trim();
 
-  await send(chatId, text, { reply_markup: MENU_KEYBOARD });
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
 }
 
-/**
- * Thống kê theo bãi:
- * - Tổng bao / chuẩn / tiền mỗi bãi
- * - Thêm breakdown theo vòng của bãi: V1, V2, V3...
- */
 async function reportByBai(chatId) {
   const rows = await getRows();
-  const objs = rows.map(parseRowToObj);
-  const { annotated, closedSegments } = buildSegmentsAndRunningTotals(objs);
+  const objs = rows.map(rowToObj);
 
-  // tổng theo bãi
-  const sumBai = new Map(); // bai -> {baoTau, baoChuan, won}
-  for (const o of annotated) {
-    if (!o.bai) continue;
-    const cur = sumBai.get(o.bai) || { baoTau: 0, baoChuan: 0, won: 0 };
+  const map = new Map(); // bai -> agg
+  for (const o of objs) {
+    if (!isWorkRow(o)) continue;
+    const cur = map.get(o.bai) || { baoTau: 0, baoChuan: 0, won: 0, lastCleanDate: "" };
     cur.baoTau += o.baoTau || 0;
     cur.baoChuan += o.baoChuan || 0;
     cur.won += o.won || 0;
-    sumBai.set(o.bai, cur);
+    if (isCleanRow(o)) cur.lastCleanDate = o.date || cur.lastCleanDate;
+    map.set(o.bai, cur);
   }
 
-  // breakdown vòng theo bãi (chỉ vòng đã khép)
-  const byBaiV = new Map(); // bai -> Map(vong->won)
-  for (const seg of closedSegments) {
-    if (!byBaiV.has(seg.bai)) byBaiV.set(seg.bai, new Map());
-    const m = byBaiV.get(seg.bai);
-    m.set(seg.vong, (m.get(seg.vong) || 0) + (seg.won || 0));
+  const items = [...map.entries()].sort((a, b) => (b[1].won || 0) - (a[1].won || 0));
+
+  let out = "📍 THỐNG KÊ THEO BÃI (tổng từ DATA)\n";
+  for (const [bai, v] of items) {
+    const forecast = v.lastCleanDate ? addDaysYmd(v.lastCleanDate, CUT_INTERVAL_DAYS) : "";
+    out += `\n• ${bai}: ${v.baoTau} bao | ≈ ${v.baoChuan} chuẩn | ${Number(v.won).toLocaleString()} ₩`;
+    if (forecast) out += `\n  ⤷ Dự báo cắt lại: ${forecast}`;
   }
 
-  // lịch cắt theo bãi (last clean + interval)
-  const items = Object.keys(MAX_DAY).map((bai) => {
-    const lastClean = lastCleanDateForBai(annotated, bai);
-    const forecast = lastClean ? addDaysToDate(lastClean, CUT_INTERVAL_DAYS) : null;
-    return { bai, lastClean, forecast };
-  });
-
-  // output
-  let out = `📍 THỐNG KÊ THEO BÃI (tính từ DATA)\n`;
-  const sortedBai = [...sumBai.entries()].sort((a, b) => (b[1].won || 0) - (a[1].won || 0));
-
-  for (const [bai, v] of sortedBai) {
-    out += `\n• ${bai}: ${v.baoTau} bao | ≈ ${v.baoChuan} chuẩn | ${wonFmt(v.won)} ₩`;
-
-    const mv = byBaiV.get(bai);
-    if (mv && mv.size) {
-      const vv = [...mv.entries()].sort((a, b) => a[0] - b[0]);
-      const brief = vv.map(([k, won]) => `V${k}: ${wonFmt(won)}₩`).join(" | ");
-      out += `\n  ⤷ Theo vòng: ${brief}`;
-    }
-
-    const it = items.find((x) => x.bai === bai);
-    if (it?.forecast?.ddmmyyyy) out += `\n  ⤷ Dự báo cắt lại: ${it.forecast.ddmmyyyy}`;
-    else out += `\n  ⤷ Dự báo cắt lại: (chưa có dữ liệu cắt sạch)`;
-  }
-
-  await send(chatId, out.trim(), { reply_markup: MENU_KEYBOARD });
+  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
 }
 
 /**
- * Thống kê theo VÒNG (FIX):
- * - Vòng 1 = tổng tiền của Vòng 1 của TẤT CẢ BÃI (đã khép)
- * - Vòng 2 tương tự...
- * - Chỉ tính các vòng ĐÃ KHÉP (có cắt sạch)
+ * ✅ THỐNG KÊ THEO VÒNG:
+ * - Vòng của mỗi dòng = cleanDoneBefore + 1
+ * - Cộng tiền theo Vòng, bao gồm cả "cắt dỡ" (đúng chốt mới)
  */
 async function reportByVong(chatId) {
   const rows = await getRows();
-  const objs = rows.map(parseRowToObj);
-  const { closedSegments } = buildSegmentsAndRunningTotals(objs);
+  const objs = rows.map(rowToObj);
+  const withV = assignVongAll(objs);
 
-  // sum theo vong toàn hệ
   const sumByV = new Map(); // vong -> won
-  // đồng thời giữ chi tiết theo bãi
-  const sumByBaiV = new Map(); // bai -> Map(vong->won)
+  const sumByBaiV = new Map(); // bai|vong -> won
 
-  for (const seg of closedSegments) {
-    sumByV.set(seg.vong, (sumByV.get(seg.vong) || 0) + (seg.won || 0));
+  for (const o of withV) {
+    if (!isWorkRow(o) || o.vong <= 0) continue;
 
-    if (!sumByBaiV.has(seg.bai)) sumByBaiV.set(seg.bai, new Map());
-    const m = sumByBaiV.get(seg.bai);
-    m.set(seg.vong, (m.get(seg.vong) || 0) + (seg.won || 0));
+    sumByV.set(o.vong, (sumByV.get(o.vong) || 0) + (o.won || 0));
+
+    const key = `${o.bai}|${o.vong}`;
+    sumByBaiV.set(key, (sumByBaiV.get(key) || 0) + (o.won || 0));
   }
 
-  const vongs = [...sumByV.entries()].sort((a, b) => a[0] - b[0]);
+  const vongs = [...sumByV.entries()].sort((a, b) => a[0] - b[0]).slice(0, 50);
 
-  let out = "🔁 THỐNG KÊ THEO VÒNG (cộng tất cả lượt CẮT SẠCH của mọi bãi)\n";
-  if (!vongs.length) {
-    out += "\n• (Chưa có vòng nào khép – chưa có dòng cắt sạch)";
-    await send(chatId, out.trim(), { reply_markup: MENU_KEYBOARD });
-    return;
-  }
-
-  // liệt kê 1..n
+  let out = "🔁 THỐNG KÊ THEO VÒNG (cộng tất cả lệnh thuộc vòng của mỗi bãi)\n";
+  if (!vongs.length) out += "\n(Chưa có dữ liệu)";
   for (const [v, won] of vongs) {
-    out += `\n• Vòng ${v}: ${wonFmt(won)} ₩`;
+    out += `\n• Vòng ${v}: ${Number(won).toLocaleString()} ₩`;
   }
 
-  // thêm dòng tóm tắt theo từng bãi (ngắn gọn)
   out += "\n\nTheo từng bãi:";
-  const allBai = Object.keys(MAX_DAY);
-  for (const bai of allBai) {
-    const m = sumByBaiV.get(bai);
-    if (!m || !m.size) continue;
-    const parts = [...m.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([v, won]) => `V${v}: ${wonFmt(won)}₩`);
-    out += `\n- ${bai}: ${parts.join(" | ")}`;
+  const list = [...sumByBaiV.entries()]
+    .map(([k, won]) => {
+      const [bai, v] = k.split("|");
+      return { bai, vong: Number(v), won };
+    })
+    .sort((a, b) => (a.bai + a.vong).localeCompare(b.bai + b.vong));
+
+  if (!list.length) out += "\n(Chưa có dữ liệu)";
+  for (const it of list) {
+    out += `\n- ${it.bai}: V${it.vong}: ${Number(it.won).toLocaleString()} ₩`;
   }
 
-  await send(chatId, out.trim(), { reply_markup: MENU_KEYBOARD });
+  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
 }
 
 /**
- * Lịch cắt các bãi:
- * - Lấy lần cắt sạch gần nhất của từng bãi, + CUT_INTERVAL_DAYS
- * - Sắp xếp theo ngày gần nhất -> xa nhất
- * - bãi chưa có cắt sạch -> đưa xuống cuối
+ * 📆 LỊCH CẮT CÁC BÃI:
+ * - theo lần CẮT SẠCH gần nhất + CUT_INTERVAL_DAYS
+ * - sort ngày gần -> xa
  */
 async function reportCutSchedule(chatId) {
   const rows = await getRows();
-  const objs = rows.map(parseRowToObj);
-  const { annotated } = buildSegmentsAndRunningTotals(objs);
+  const objs = rows.map(rowToObj);
 
-  const list = Object.keys(MAX_DAY).map((bai) => {
-    const lastClean = lastCleanDateForBai(annotated, bai);
-    const forecast = lastClean ? addDaysToDate(lastClean, CUT_INTERVAL_DAYS) : null;
-    return { bai, lastClean, forecast };
-  });
-
-  const withDate = list
-    .filter((x) => x.forecast?.dateObj)
-    .sort((a, b) => a.forecast.dateObj.getTime() - b.forecast.dateObj.getTime());
-
-  const noDate = list.filter((x) => !x.forecast?.dateObj);
-
-  let out =
-`📆 LỊCH CẮT DỰ KIẾN (tất cả bãi)
-(Theo lần CẮT SẠCH gần nhất + ${CUT_INTERVAL_DAYS} ngày)
-`.trim();
-
-  for (const it of withDate) {
-    out += `\n• ${it.bai}: ${it.forecast.ddmmyyyy}`;
-  }
-  for (const it of noDate) {
-    out += `\n• ${it.bai}: (chưa có dữ liệu cắt sạch)`;
+  const items = [];
+  for (const bai of Object.keys(MAX_DAY)) {
+    const st = computeBaiState(objs, bai);
+    const forecast = forecastForBai(st); // dd/mm/yyyy hoặc ""
+    if (!forecast) {
+      items.push({ bai, forecast: "", sortKey: Infinity });
+    } else {
+      // parse dd/mm/yyyy to epoch for sorting
+      const [dd, mm, yyyy] = forecast.split("/");
+      const t = new Date(`${yyyy}-${mm}-${dd}T00:00:00`).getTime();
+      items.push({ bai, forecast, sortKey: t });
+    }
   }
 
-  await send(chatId, out.trim(), { reply_markup: MENU_KEYBOARD });
+  items.sort((a, b) => a.sortKey - b.sortKey);
+
+  let out = `📆 LỊCH CẮT DỰ KIẾN (tất cả bãi)\n(Theo lần CẮT SẠCH gần nhất + ${CUT_INTERVAL_DAYS} ngày)\n`;
+  for (const it of items) {
+    if (!it.forecast) out += `\n• ${it.bai}: (chưa có dữ liệu cắt sạch)`;
+    else out += `\n• ${it.bai}: ${it.forecast}`;
+  }
+
+  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
 }
 
-/* ============================ DELETE CONFIRM (2525) ============================ */
+/* ================== MAIN LOGIC: BUILD WORK ROW WITH PROGRESS ================== */
 /**
- * pendingDeleteByChat:
- *  chatId -> { action: 'DEL_LAST'|'RESET_ALL', createdAt }
+ * Rule:
+ * - Nếu gDelta thiếu => progress = max => Cắt sạch
+ * - Nếu có gDelta => progress = prevProgress + gDelta (nếu prevProgress=0 sau clean)
+ *   + nếu progress >= max => progress=max => Cắt sạch
+ *   + else => Cắt dỡ
  */
-const pendingDeleteByChat = new Map();
+function buildWorkProgress({ allObjs, bai, gDelta }) {
+  const max = MAX_DAY[bai];
+  const st = computeBaiState(allObjs, bai);
 
-function setPending(chatId, action) {
-  pendingDeleteByChat.set(String(chatId), { action, createdAt: Date.now() });
-}
-function getPending(chatId) {
-  const x = pendingDeleteByChat.get(String(chatId));
-  if (!x) return null;
-  if (Date.now() - x.createdAt > PENDING_TTL_MS) {
-    pendingDeleteByChat.delete(String(chatId));
-    return null;
+  // st.progress là progress hiện tại (nếu đang cắt dỡ), hoặc 0 nếu vừa sạch
+  let newProgress;
+  let tinhHinh;
+
+  if (!gDelta) {
+    newProgress = max;
+    tinhHinh = "Cắt sạch";
+  } else {
+    newProgress = Math.min(max, Number(st.progress || 0) + Number(gDelta));
+    tinhHinh = newProgress >= max ? "Cắt sạch" : "Cắt dỡ";
   }
-  return x;
-}
-function clearPending(chatId) {
-  pendingDeleteByChat.delete(String(chatId));
+
+  const vong = st.currentVong; // vòng hiện tại (cleanDone+1)
+  // nếu lần này clean thì vẫn hiển thị vòng hiện tại (đúng yêu cầu)
+  // sau đó vòng sẽ tăng cho lần tiếp theo.
+
+  return { max, newProgress, tinhHinh, vong };
 }
 
-/* ============================ MAIN HANDLER ============================ */
+/* ================== MAIN HANDLER ================== */
 async function handleTextMessage(msg) {
-  const chatId = msg.chat.id;
+  const chatId = msg.chat?.id;
+  if (!chatId) return;
+
   const userName = msg.from?.first_name || "Bạn";
   const textRaw = (msg.text || "").trim();
 
-  // đảm bảo menu luôn có
-  // (lần đầu nhắn /start hoặc bất kỳ tin nhắn nào cũng set)
-  if (textRaw === "/start") {
-    await send(chatId, `✅ Bot đã sẵn sàng (${VERSION}).`, { reply_markup: MENU_KEYBOARD });
-    return;
-  }
-
-  // Nếu đang chờ xác nhận xóa
-  const pending = getPending(chatId);
-  if (pending) {
-    if (textRaw === DELETE_CODE) {
-      if (pending.action === "DEL_LAST") {
-        const rows = await getRows();
-        const idx = await findLastRowIndexAny(rows);
-        if (!idx) {
-          await send(chatId, "Không có dữ liệu để xoá.", { reply_markup: MENU_KEYBOARD });
-          clearPending(chatId);
-          return;
-        }
-        await clearRow(idx);
-        clearPending(chatId);
-        await send(chatId, `✅ Đã xoá dòng gần nhất (row ${idx}).`, { reply_markup: MENU_KEYBOARD });
-        return;
-      }
-
-      if (pending.action === "RESET_ALL") {
-        await clearAllData();
-        clearPending(chatId);
-        await send(chatId, "✅ Đã XOÁ SẠCH toàn bộ DATA (giữ header). Bạn có thể làm lại từ đầu.", {
-          reply_markup: MENU_KEYBOARD,
-        });
-        return;
-      }
+  // Nếu user nhập mã 2525 để xác nhận xóa
+  if (textRaw === CONFIRM_CODE) {
+    const p = getPending(chatId);
+    if (!p) {
+      await send(chatId, "⚠️ Không có yêu cầu xoá nào đang chờ xác nhận.", {
+        reply_markup: buildMainKeyboard(),
+      });
+      return;
     }
 
-    // nhập sai code => báo 1 câu ngắn
-    await send(chatId, "❌ Sai mã xác nhận. Nếu muốn xoá, hãy nhập đúng 2525.", { reply_markup: MENU_KEYBOARD });
+    if (p.action === "RESET") {
+      await clearAllData();
+      clearPending(chatId);
+      await send(chatId, "✅ Đã XOÁ SẠCH DATA (giữ header). Bạn có thể làm lại từ đầu.", {
+        reply_markup: buildMainKeyboard(),
+      });
+      return;
+    }
+
+    if (p.action === "DEL_LAST") {
+      const rows = await getRows();
+      const idx = findLastRowIndexAny(rows);
+      if (!idx) {
+        clearPending(chatId);
+        await send(chatId, "Không có dữ liệu để xoá.", { reply_markup: buildMainKeyboard() });
+        return;
+      }
+      await clearRow(idx);
+      clearPending(chatId);
+      await send(chatId, "✅ Đã xoá dòng gần nhất.", { reply_markup: buildMainKeyboard() });
+      return;
+    }
+
+    // fallback
+    clearPending(chatId);
+    await send(chatId, "⚠️ Yêu cầu xác nhận không hợp lệ.", {
+      reply_markup: buildMainKeyboard(),
+    });
     return;
   }
 
-  // MENU buttons (reply keyboard)
+  // ====== MENU BUTTONS (Reply keyboard texts) ======
+  if (textRaw === "/start") {
+    await send(chatId, "✅ Sổ Kim đã sẵn sàng. Bạn cứ nhập lệnh theo cú pháp.", {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
+
   if (textRaw === "📅 Thống kê tháng này") return reportMonth(chatId);
   if (textRaw === "🔁 Thống kê theo VÒNG") return reportByVong(chatId);
   if (textRaw === "📍 Thống kê theo BÃI") return reportByBai(chatId);
   if (textRaw === "📆 Lịch cắt các bãi") return reportCutSchedule(chatId);
 
   if (textRaw === "✏️ Sửa dòng gần nhất") {
-    const help =
-`✏️ SỬA DÒNG GẦN NHẤT
-Bạn gõ:  sua <cú pháp mới>
-Ví dụ:  sua A27 60b 200k
-Ví dụ:  sua A27 30g 40b 220k
-Ví dụ:  sua 34 109g 60b 220k 13d
-(Chỉ sửa dòng gần nhất của BÃI đó do bạn nhập)`.trim();
-    await send(chatId, help, { reply_markup: MENU_KEYBOARD });
+    await send(
+      chatId,
+      `✏️ SỬA DÒNG GẦN NHẤT\nBạn gõ:  sua <cú pháp mới>\nVí dụ:\nsua A27 60b 200k\nsua A27 30g 40b 220k\nsua A27 80b 120k 5d`,
+      { reply_markup: buildMainKeyboard() }
+    );
     return;
   }
 
-  if (textRaw === "🗑️ Xoá dòng gần nhất") {
+  if (textRaw === "🗑️ Xóa dòng gần nhất") {
     setPending(chatId, "DEL_LAST");
-    await send(chatId, "⚠️ Xác nhận xoá dòng gần nhất: nhập 2525", { reply_markup: MENU_KEYBOARD });
+    await send(chatId, `⚠️ Xác nhận xoá dòng gần nhất: nhập mã ${CONFIRM_CODE}`, {
+      reply_markup: buildMainKeyboard(),
+    });
     return;
   }
 
-  if (textRaw === "⚠️ XOÁ SẠCH DỮ LIỆU") {
-    setPending(chatId, "RESET_ALL");
-    await send(chatId, "⚠️ Xác nhận XOÁ SẠCH dữ liệu: nhập 2525", { reply_markup: MENU_KEYBOARD });
+  if (textRaw === "⚠️ XÓA SẠCH DỮ LIỆU") {
+    setPending(chatId, "RESET");
+    await send(chatId, `⚠️ Xác nhận XOÁ SẠCH dữ liệu: nhập mã ${CONFIRM_CODE}`, {
+      reply_markup: buildMainKeyboard(),
+    });
     return;
   }
 
-  // SỬA: "sua <...>"
+  // ====== SỬA: "sua <...>" ======
   if (textRaw.toLowerCase().startsWith("sua ")) {
     const newLine = textRaw.slice(4).trim();
     const parsed = parseWorkLine(newLine);
+
     if (!parsed || parsed.type !== "WORK") {
-      await send(chatId, WRONG_SYNTAX_TEXT, { reply_markup: MENU_KEYBOARD });
+      await send(chatId, buildSaiCuPhapText(), { reply_markup: buildMainKeyboard() });
       return;
     }
 
     const rows = await getRows();
-    const rowIdx = await findLastWorkRowIndexForUserAndBai(rows, userName, parsed.viTri);
-    if (!rowIdx) {
-      await send(chatId, "❌ Không tìm thấy dòng gần nhất để sửa cho bãi này.", { reply_markup: MENU_KEYBOARD });
+    const idx = findLastWorkRowIndexForUserAndBai(rows, userName, parsed.bai);
+
+    if (!idx) {
+      await send(chatId, "❌ Không tìm thấy dòng gần nhất để sửa cho bãi này.", {
+        reply_markup: buildMainKeyboard(),
+      });
       return;
     }
 
-    // Tính ngày
+    // Lấy toàn bộ objs để tính lại progress/vòng cho dòng sửa
+    const objs = rows.map(rowToObj);
+
+    // Vì sửa dòng gần nhất của bãi, lấy "state trước dòng đó":
+    // Cách đơn giản: tạm thời bỏ dòng cũ ra khỏi list rồi tính state.
+    const rowIndex0 = idx - 2;
+    const oldObj = rowToObj(rows[rowIndex0]);
+
+    const objsWithoutOld = objs.filter((_, i) => i !== rowIndex0);
+
+    // ngày làm:
     const nowKST = kst();
-    const workDate = parsed.d
-      ? new Date(nowKST.getFullYear(), nowKST.getMonth(), parsed.d)
+    const workDate = parsed.dayInMonth
+      ? new Date(nowKST.getFullYear(), nowKST.getMonth(), parsed.dayInMonth)
       : new Date(nowKST.getTime() - 86400000);
 
+    const dateYmd = ymd(workDate);
     const bc = baoChuan(parsed.b);
-    const money = bc * parsed.k * 1000;
+    const won = bc * parsed.k * 1000;
 
-    const isClean = parsed.g === MAX_DAY[parsed.viTri];
-    const tinhHinh = isClean ? "Cắt sạch" : "Chưa sạch";
+    // tính progress & vòng theo dữ liệu đã loại dòng cũ
+    const { max, newProgress, tinhHinh, vong } = buildWorkProgress({
+      allObjs: objsWithoutOld,
+      bai: parsed.bai,
+      gDelta: parsed.gDelta,
+    });
 
-    // giữ timestamp cũ
-    const oldObj = parseRowToObj(rows[rowIdx - 2]);
-    const newRow = [
-      oldObj.ts || new Date().toISOString(),
-      ymd(workDate),
-      userName,
-      parsed.viTri,
-      parsed.g,
-      MAX_DAY[parsed.viTri],
-      tinhHinh,
-      parsed.b,
-      bc,
-      parsed.k,
-      money,
-      parsed.note || oldObj.note || "",
-    ];
+    // tổng thu đến thời điểm này: cộng tất cả + dòng sửa
+    const totalBefore = objsWithoutOld.reduce((s, o) => s + (o.won || 0), 0);
+    const totalToNow = totalBefore + won;
 
-    await updateRow(rowIdx, newRow);
-
-    // Sau sửa: đọc lại dữ liệu và tính đúng tổng/vòng/forecast để trả SỔ KIM chuẩn
-    const rows2 = await getRows();
-    const objs2 = rows2.map(parseRowToObj);
-    const { annotated } = buildSegmentsAndRunningTotals(objs2);
-
-    // tìm lại dòng vừa sửa theo timestamp cũ (ưu tiên match ts)
-    const tsNeedle = newRow[0];
-    const edited = annotated.find((x) => x.ts === tsNeedle) || annotated[annotated.length - 1];
-
-    const totalToNow = edited?.__runningTotalAfter || annotated.reduce((s, o) => s + (o.won || 0), 0);
-
-    // forecast theo last clean
-    const bai = parsed.viTri;
-    const lastClean = lastCleanDateForBai(annotated, bai);
-    const baseCleanDate = isClean ? ymd(workDate) : lastClean;
-    const forecast = baseCleanDate ? addDaysToDate(baseCleanDate, CUT_INTERVAL_DAYS) : null;
-
-    const tinhText = isClean ? "Cắt sạch" : "Chưa sạch";
-    const msgSoKim = buildSoKimMessage(
-      userName,
-      {
-        date: ymd(workDate),
-        bai,
-        dayG: parsed.g,
-        maxG: MAX_DAY[bai],
-        baoTau: parsed.b,
-        baoChuan: bc,
-        giaK: parsed.k,
-        won: money,
-        tinhText,
-      },
-      totalToNow,
-      edited?.__vongThisRow || (isClean ? 1 : 1),
-      forecast?.ddmmyyyy || ""
+    // forecast: dựa lần cắt sạch gần nhất (sau khi sửa)
+    // nếu lần này sạch => dùng dateYmd làm mốc
+    const stAfter = computeBaiState(
+      [
+        ...objsWithoutOld,
+        {
+          ...oldObj,
+          date: dateYmd,
+          bai: parsed.bai,
+          dayG: newProgress,
+          maxG: max,
+          tinhHinh,
+          baoTau: parsed.b,
+          baoChuan: bc,
+          giaK: parsed.k,
+          won,
+        },
+      ],
+      parsed.bai
     );
 
-    await send(chatId, msgSoKim, { reply_markup: MENU_KEYBOARD });
+    const forecast = tinhHinh === "Cắt sạch"
+      ? addDaysYmd(dateYmd, CUT_INTERVAL_DAYS)
+      : forecastForBai(stAfter);
+
+    // update row giữ timestamp cũ
+    const newRow = [
+      oldObj.ts || new Date().toISOString(), // A
+      dateYmd,                               // B
+      userName,                              // C
+      parsed.bai,                            // D
+      newProgress,                           // E (progress)
+      max,                                   // F
+      tinhHinh,                              // G
+      parsed.b,                              // H
+      bc,                                    // I
+      parsed.k,                              // J
+      won,                                   // K
+      parsed.note || oldObj.note || "",      // L
+    ];
+
+    await updateRow(idx, newRow);
+
+    // trả lại đúng format "SỔ KIM" luôn (kèm forecast mới)
+    await sendSoKim({
+      chatId,
+      userName,
+      vong,
+      dateYmd,
+      bai: parsed.bai,
+      progressG: newProgress,
+      maxG: max,
+      tinhHinh,
+      baoTau: parsed.b,
+      baoChuanX: bc,
+      giaK: parsed.k,
+      won,
+      totalToNow,
+      forecast,
+    });
+
     return;
   }
 
-  // ===== nghiệp vụ chính =====
+  // ====== NO_WORK ======
   const parsed = parseWorkLine(textRaw);
 
   if (!parsed) {
-    await send(chatId, WRONG_SYNTAX_TEXT, { reply_markup: MENU_KEYBOARD });
+    await send(chatId, buildSaiCuPhapText(), { reply_markup: buildMainKeyboard() });
     return;
   }
 
-  // NO_WORK
   if (parsed.type === "NO_WORK") {
     const d = kst();
     await appendRow([
-      new Date().toISOString(),
-      ymd(d),
-      userName,
-      "",
-      0,
-      0,
-      parsed.tinhHinh,
-      0,
-      0,
-      0,
-      0,
-      "",
+      new Date().toISOString(), // A
+      ymd(d),                   // B
+      userName,                 // C
+      "",                       // D
+      0,                        // E
+      0,                        // F
+      parsed.tinhHinh,          // G
+      0,                        // H
+      0,                        // I
+      0,                        // J
+      0,                        // K
+      "",                       // L
     ]);
-
-    await send(chatId, `✅ Đã ghi: ${parsed.tinhHinh}.`, { reply_markup: MENU_KEYBOARD });
+    await send(chatId, "✅ Đã ghi nhận: " + parsed.tinhHinh, {
+      reply_markup: buildMainKeyboard(),
+    });
     return;
   }
 
-  // WORK
+  // ====== WORK ======
   const nowKST = kst();
-  const workDate = parsed.d
-    ? new Date(nowKST.getFullYear(), nowKST.getMonth(), parsed.d)
+  const workDate = parsed.dayInMonth
+    ? new Date(nowKST.getFullYear(), nowKST.getMonth(), parsed.dayInMonth)
     : new Date(nowKST.getTime() - 86400000);
 
+  const dateYmd = ymd(workDate);
+
+  const rows = await getRows();
+  const objs = rows.map(rowToObj);
+
+  const { max, newProgress, tinhHinh, vong } = buildWorkProgress({
+    allObjs: objs,
+    bai: parsed.bai,
+    gDelta: parsed.gDelta,
+  });
+
   const bc = baoChuan(parsed.b);
-  const money = bc * parsed.k * 1000;
+  const won = bc * parsed.k * 1000;
 
-  const isClean = parsed.g === MAX_DAY[parsed.viTri];
-  const tinhHinh = isClean ? "Cắt sạch" : "Chưa sạch";
+  const totalBefore = objs.reduce((s, o) => s + (o.won || 0), 0);
+  const totalToNow = totalBefore + won;
 
-  // append
-  const row = [
-    new Date().toISOString(),
-    ymd(workDate),
+  // forecast:
+  // - nếu lần này sạch => forecast = dateYmd + interval
+  // - nếu cắt dỡ => forecast dựa lastCleanDate (nếu có)
+  const stBefore = computeBaiState(objs, parsed.bai);
+  const forecast =
+    tinhHinh === "Cắt sạch"
+      ? addDaysYmd(dateYmd, CUT_INTERVAL_DAYS)
+      : (stBefore.lastCleanDate ? addDaysYmd(stBefore.lastCleanDate, CUT_INTERVAL_DAYS) : "");
+
+  // append row
+  await appendRow([
+    new Date().toISOString(), // A
+    dateYmd,                  // B
+    userName,                 // C
+    parsed.bai,               // D
+    newProgress,              // E (progress)
+    max,                      // F
+    tinhHinh,                 // G
+    parsed.b,                 // H
+    bc,                       // I
+    parsed.k,                 // J
+    won,                      // K
+    parsed.note || "",        // L
+  ]);
+
+  // output
+  await sendSoKim({
+    chatId,
     userName,
-    parsed.viTri,
-    parsed.g,
-    MAX_DAY[parsed.viTri],
+    vong,
+    dateYmd,
+    bai: parsed.bai,
+    progressG: newProgress,
+    maxG: max,
     tinhHinh,
-    parsed.b,
-    bc,
-    parsed.k,
-    money,
-    parsed.note || "",
-  ];
-  await appendRow(row);
-
-  // đọc lại để tính tổng/vòng/forecast chuẩn theo dữ liệu hiện tại
-  const rows2 = await getRows();
-  const objs2 = rows2.map(parseRowToObj);
-  const { annotated } = buildSegmentsAndRunningTotals(objs2);
-
-  // tìm dòng mới theo timestamp vừa append
-  const createdTs = row[0];
-  const cur = annotated.find((x) => x.ts === createdTs) || annotated[annotated.length - 1];
-
-  const totalToNow = cur?.__runningTotalAfter || annotated.reduce((s, o) => s + (o.won || 0), 0);
-
-  // forecast
-  const bai = parsed.viTri;
-  const lastClean = lastCleanDateForBai(annotated, bai);
-  const baseCleanDate = isClean ? ymd(workDate) : lastClean;
-  const forecast = baseCleanDate ? addDaysToDate(baseCleanDate, CUT_INTERVAL_DAYS) : null;
-
-  const tinhText = isClean ? "Cắt sạch" : "Chưa sạch";
-  const msgSoKim = buildSoKimMessage(
-    userName,
-    {
-      date: ymd(workDate),
-      bai,
-      dayG: parsed.g,
-      maxG: MAX_DAY[bai],
-      baoTau: parsed.b,
-      baoChuan: bc,
-      giaK: parsed.k,
-      won: money,
-      tinhText,
-    },
+    baoTau: parsed.b,
+    baoChuanX: bc,
+    giaK: parsed.k,
+    won,
     totalToNow,
-    cur?.__vongThisRow || (isClean ? 1 : 1),
-    forecast?.ddmmyyyy || ""
-  );
-
-  await send(chatId, msgSoKim, { reply_markup: MENU_KEYBOARD });
+    forecast,
+  });
 }
 
-/* ============================ WEBHOOK ============================ */
+/* ================== CALLBACK (optional) ==================
+Hiện tại ta dùng Reply Keyboard (bấm là gửi text),
+nên callback_query không bắt buộc.
+Nhưng vẫn để answerCallbackQuery nếu sau này bạn thêm inline buttons.
+=========================================================== */
+async function handleCallbackQuery(cb) {
+  await tg("answerCallbackQuery", { callback_query_id: cb.id });
+}
+
+/* ================== WEBHOOK ================== */
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
+
   try {
     const body = req.body;
+
+    if (body?.callback_query) {
+      await handleCallbackQuery(body.callback_query);
+      return;
+    }
+
     if (body?.message) {
       await handleTextMessage(body.message);
       return;
@@ -979,6 +974,21 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-/* ============================ START ============================ */
+/* ================== START ================== */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log("✅ KIM BOT READY on", PORT, "|", VERSION));
+
+/**
+ * ============================================================
+ * NOTES:
+ * - Nếu bạn muốn menu luôn hiện ngay khi chat mở:
+ *   chỉ cần /start 1 lần. Bot đã gắn keyboard vào mỗi câu trả lời.
+ *
+ * - Cột E (DayG) bây giờ là "progress cộng dồn" theo vòng,
+ *   nên bãi 34 cắt 2 lần 55g + 54g => lần 2 sẽ thành 109/109 => CẮT SẠCH.
+ *
+ * - Thống kê vòng:
+ *   cộng theo vòng của từng bãi (cleanCountBefore+1) và tính cả cắt dỡ.
+ *
+ * ============================================================
+ */
