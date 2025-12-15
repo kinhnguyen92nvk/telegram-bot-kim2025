@@ -13,14 +13,14 @@ const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_APPLICATION_CREDENTIALS =
   process.env.GOOGLE_APPLICATION_CREDENTIALS || "/etc/secrets/google-service-account.json";
 
-// Bảo vệ bot: chỉ cho phép chatId trong ALLOWED_CHATS (ngăn người lạ)
+// Optional: khóa bot theo chat (khuyến nghị)
+// VD: "123456789,-100111222333"
 const ALLOWED_CHATS = (process.env.ALLOWED_CHATS || "")
   .split(",")
   .map(s => s.trim())
-  .filter(Boolean); // ví dụ: "123, -100999"
+  .filter(Boolean);
 
-// Rate limit đơn giản (ms)
-const MIN_GAP_MS = Number(process.env.MIN_GAP_MS || 800);
+const MIN_GAP_MS = Number(process.env.MIN_GAP_MS || 600); // chống spam nhanh
 
 /* ================== BASIC ROUTES ================== */
 app.get("/", (req, res) => res.status(200).send("OK - telegram-bot-kim2025"));
@@ -34,7 +34,7 @@ const auth = new google.auth.GoogleAuth({
 const sheets = google.sheets({ version: "v4", auth });
 
 async function appendRow(tab, rowValues) {
-  if (!GOOGLE_SHEET_ID) return;
+  if (!GOOGLE_SHEET_ID) throw new Error("Missing GOOGLE_SHEET_ID");
   await sheets.spreadsheets.values.append({
     spreadsheetId: GOOGLE_SHEET_ID,
     range: `${tab}!A1`,
@@ -51,6 +51,7 @@ async function getRows(tab, rangeA1) {
   return resp?.data?.values || [];
 }
 
+/* ================== TELEGRAM ================== */
 async function sendMessage(chat_id, text) {
   if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
   return fetch(`${TELEGRAM_API}/sendMessage`, {
@@ -60,22 +61,12 @@ async function sendMessage(chat_id, text) {
   });
 }
 
-async function log(level, message) {
-  console.log(level, message);
-  try {
-    await appendRow("Log", [new Date().toISOString(), level, String(message).slice(0, 4000)]);
-  } catch (e) {
-    console.error("LOG->SHEET ERROR:", e?.message || e);
-  }
-}
-
-/* ================== BOT GUARDS ================== */
-// chống xử lý trùng + chống spam nhanh
+/* ================== GUARDS ================== */
 const seenUpdateIds = new Set();
 const lastChatAt = new Map();
 
 function isAllowedChat(chatId) {
-  if (!ALLOWED_CHATS.length) return true; // nếu bạn chưa set ALLOWED_CHATS thì cho phép tất cả
+  if (!ALLOWED_CHATS.length) return true;
   return ALLOWED_CHATS.includes(String(chatId));
 }
 
@@ -87,64 +78,45 @@ function rateLimited(chatId) {
   return false;
 }
 
-/* ================== PARSER THU HOACH ================== */
-/**
- * Nhập dạng:
- *  - "A27 60b 220k"
- *  - "B24 84 140k cat sach"
- *  - "C11 59b 180" (coi 180 = 180k)
- *
- * Trả về: { bai, bao, gia_k, tinh_trang, ghi_chu }
- */
-function parseThuHoach(textRaw) {
+/* ================== PARSER ==================
+Nhập:
+- A27 60b 220k
+- B24 84 140k cắt sạch
+- C11 59b 180 nghỉ (note)
+*/
+function parseInput(textRaw) {
   const text = textRaw.trim();
+  const lower = text.toLowerCase();
 
   // lệnh báo cáo
-  const lower = text.toLowerCase();
   if (lower.includes("tổng hôm nay")) return { cmd: "TODAY" };
   if (lower.includes("tổng cả vụ") || lower.includes("tong ca vu")) return { cmd: "ALL" };
 
-  // Pattern: bai (A27/B24/34...), bao (60 hoặc 60b), gia (220k hoặc 220)
+  // bắt pattern: Vị trí + Bao + Giá + phần còn lại
   const m = text.match(/^\s*([A-Za-z]?\d{1,3})\s+(\d+)\s*(?:b|bao)?\s+(\d+)\s*(?:k)?\s*(.*)$/i);
   if (!m) return null;
 
-  const bai = m[1].toUpperCase();
-  const bao = Number(m[2]);
-  let gia_k = Number(m[3]);
-  if (!Number.isFinite(gia_k)) return null;
-  // nếu người dùng nhập "220k" hoặc "220" đều hiểu là 220k
-  // (ở đây gia_k chính là đơn vị k)
+  const viTri = m[1].toUpperCase();
+  const dayG = Number(m[2]);
+  const giaK = Number(m[3]);
   const tail = (m[4] || "").trim();
 
-  // tách tình trạng / ghi chú đơn giản
-  let tinh_trang = "";
-  let ghi_chu = "";
+  let tinhHinh = "";
+  let note = "";
+
   if (tail) {
-    // nếu có cụm "cắt sạch" hoặc "cat sach" thì coi là tình trạng
     const t = tail.toLowerCase();
-    if (t.includes("cắt sạch") || t.includes("cat sach")) tinh_trang = "Cắt sạch";
-    else if (t.includes("cắt") || t.includes("cat")) tinh_trang = "Cắt";
-    else if (t.includes("nghỉ") || t.includes("nghi")) tinh_trang = "Nghỉ";
-    else ghi_chu = tail;
-    if (!ghi_chu && tail && tinh_trang) {
-      // phần còn lại làm ghi chú (tối giản)
-      ghi_chu = tail.replace(/cắt sạch|cat sach|cắt|cat|nghỉ|nghi/gi, "").trim();
+    if (t.includes("cắt sạch") || t.includes("cat sach")) tinhHinh = "Cắt sạch";
+    else if (t.includes("nghỉ") || t.includes("nghi")) tinhHinh = "Nghỉ";
+    else if (t.includes("cắt") || t.includes("cat")) tinhHinh = "Cắt";
+    else note = tail;
+
+    if (!note && tail && tinhHinh) {
+      note = tail.replace(/cắt sạch|cat sach|cắt|cat|nghỉ|nghi/gi, "").trim();
     }
   }
 
-  return { bai, bao, gia_k, tinh_trang, ghi_chu };
-}
-
-/* ================== REPORTS ================== */
-function isSameKSTDate(isoTime, targetDateKST) {
-  // isoTime: "2025-12-15T....Z" -> so sánh theo KST (+09)
-  const d = new Date(isoTime);
-  const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
-  const y = kst.getUTCFullYear();
-  const m = String(kst.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(kst.getUTCDate()).padStart(2, "0");
-  const key = `${y}-${m}-${day}`;
-  return key === targetDateKST;
+  return { viTri, dayG, giaK, tinhHinh, note };
 }
 
 function todayKSTKey() {
@@ -156,89 +128,100 @@ function todayKSTKey() {
   return `${y}-${m}-${d}`;
 }
 
+function isSameKSTDate(isoTime, targetYmd) {
+  const d = new Date(isoTime);
+  const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  const y = kst.getUTCFullYear();
+  const m = String(kst.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(kst.getUTCDate()).padStart(2, "0");
+  const key = `${y}-${m}-${day}`;
+  return key === targetYmd;
+}
+
+/* ================== REPORTS from DATA ================== */
 async function reportToday() {
-  const rows = await getRows("THU_HOACH", "A2:I");
+  const rows = await getRows("DATA", "A2:L");
   const key = todayKSTKey();
 
-  let totalBao = 0;
+  let totalBaoChuan = 0;
   let totalWonK = 0;
-  const byBai = new Map();
+  const byViTri = new Map();
 
   for (const r of rows) {
-    const time = r[0];
-    const bai = r[1];
-    const bao = Number(r[2] || 0);
-    const gia_k = Number(r[3] || 0);
-    if (!time || !bai) continue;
-    if (!isSameKSTDate(time, key)) continue;
+    const ts = r[0];
+    const viTri = r[3];
+    const baoChuan = Number(r[8] || 0); // I
+    const giaK = Number(r[9] || 0);     // J
+    const thuLoWon = Number(r[10] || (baoChuan * giaK) || 0); // K
 
-    totalBao += bao;
-    totalWonK += bao * gia_k;
+    if (!ts || !viTri) continue;
+    if (!isSameKSTDate(ts, key)) continue;
 
-    const cur = byBai.get(bai) || { bao: 0, wonK: 0 };
-    cur.bao += bao;
-    cur.wonK += bao * gia_k;
-    byBai.set(bai, cur);
+    totalBaoChuan += baoChuan;
+    totalWonK += thuLoWon;
+
+    const cur = byViTri.get(viTri) || { bao: 0, wonK: 0 };
+    cur.bao += baoChuan;
+    cur.wonK += thuLoWon;
+    byViTri.set(viTri, cur);
   }
 
   const lines = [];
   lines.push(`📊 TỔNG HÔM NAY (KST) ${key}`);
-  lines.push(`• Tổng bao: ${totalBao}`);
-  lines.push(`• Tổng tiền: ${totalWonK.toLocaleString()}k`);
+  lines.push(`• Bao chuẩn: ${totalBaoChuan}`);
+  lines.push(`• Thu lợi: ${totalWonK.toLocaleString()}k`);
 
-  const sorted = [...byBai.entries()].sort((a, b) => b[1].wonK - a[1].wonK);
+  const sorted = [...byViTri.entries()].sort((a, b) => b[1].wonK - a[1].wonK);
   if (sorted.length) {
     lines.push("");
     lines.push("📍 Theo bãi:");
-    for (const [bai, v] of sorted) {
-      lines.push(`- ${bai}: ${v.bao} bao • ${v.wonK.toLocaleString()}k`);
-    }
+    for (const [k, v] of sorted) lines.push(`- ${k}: ${v.bao} bao • ${v.wonK.toLocaleString()}k`);
   }
 
   return lines.join("\n");
 }
 
 async function reportAll() {
-  const rows = await getRows("THU_HOACH", "A2:I");
+  const rows = await getRows("DATA", "A2:L");
 
-  let totalBao = 0;
+  let totalBaoChuan = 0;
   let totalWonK = 0;
-  const byBai = new Map();
+  const byViTri = new Map();
 
   for (const r of rows) {
-    const bai = r[1];
-    const bao = Number(r[2] || 0);
-    const gia_k = Number(r[3] || 0);
-    if (!bai) continue;
+    const viTri = r[3];
+    const baoChuan = Number(r[8] || 0);
+    const giaK = Number(r[9] || 0);
+    const thuLoWon = Number(r[10] || (baoChuan * giaK) || 0);
 
-    totalBao += bao;
-    totalWonK += bao * gia_k;
+    if (!viTri) continue;
 
-    const cur = byBai.get(bai) || { bao: 0, wonK: 0 };
-    cur.bao += bao;
-    cur.wonK += bao * gia_k;
-    byBai.set(bai, cur);
+    totalBaoChuan += baoChuan;
+    totalWonK += thuLoWon;
+
+    const cur = byViTri.get(viTri) || { bao: 0, wonK: 0 };
+    cur.bao += baoChuan;
+    cur.wonK += thuLoWon;
+    byViTri.set(viTri, cur);
   }
 
   const lines = [];
   lines.push("📈 TỔNG CẢ VỤ");
-  lines.push(`• Tổng bao: ${totalBao}`);
-  lines.push(`• Tổng tiền: ${totalWonK.toLocaleString()}k`);
+  lines.push(`• Bao chuẩn: ${totalBaoChuan}`);
+  lines.push(`• Thu lợi: ${totalWonK.toLocaleString()}k`);
 
-  const sorted = [...byBai.entries()].sort((a, b) => b[1].wonK - a[1].wonK);
+  const sorted = [...byViTri.entries()].sort((a, b) => b[1].wonK - a[1].wonK);
   if (sorted.length) {
     lines.push("");
     lines.push("📍 Theo bãi:");
-    for (const [bai, v] of sorted) {
-      lines.push(`- ${bai}: ${v.bao} bao • ${v.wonK.toLocaleString()}k`);
-    }
+    for (const [k, v] of sorted) lines.push(`- ${k}: ${v.bao} bao • ${v.wonK.toLocaleString()}k`);
   }
+
   return lines.join("\n");
 }
 
 /* ================== WEBHOOK ================== */
 app.post("/webhook", async (req, res) => {
-  // trả 200 ngay để Telegram không retry
   res.sendStatus(200);
 
   try {
@@ -246,9 +229,8 @@ app.post("/webhook", async (req, res) => {
     const updateId = update?.update_id;
 
     if (updateId != null) {
-      if (seenUpdateIds.has(updateId)) return; // chống trùng
+      if (seenUpdateIds.has(updateId)) return;
       seenUpdateIds.add(updateId);
-      // giữ set nhỏ
       if (seenUpdateIds.size > 2000) {
         const first = seenUpdateIds.values().next().value;
         seenUpdateIds.delete(first);
@@ -259,39 +241,38 @@ app.post("/webhook", async (req, res) => {
     const chatId = msg?.chat?.id;
     const text = msg?.text;
     const from = msg?.from;
-    const msgId = msg?.message_id;
 
     if (!chatId || !text) return;
 
-    // khóa bot theo chat
     if (!isAllowedChat(chatId)) return;
-
-    // rate limit
     if (rateLimited(chatId)) return;
 
-    // /start
+    const userName =
+      [from?.first_name, from?.last_name].filter(Boolean).join(" ") ||
+      from?.username ||
+      "unknown";
+
     if (text === "/start") {
       await sendMessage(
         chatId,
-        "Bot KIM 2025 OK ✅\n\n✅ Nhập thu hoạch: A27 60b 220k (có thể thêm 'cắt sạch')\n📊 Lệnh: Tổng hôm nay | Tổng cả vụ"
+        "Bot KIM 2025 OK ✅\n\n✅ Nhập: A27 60b 220k (có thể thêm 'cắt sạch' / 'nghỉ')\n📊 Lệnh: Tổng hôm nay | Tổng cả vụ"
       );
       return;
     }
 
-    // command report
-    const parsed = parseThuHoach(text);
+    const parsed = parseInput(text);
+
+    // báo cáo
     if (parsed?.cmd === "TODAY") {
-      const rep = await reportToday();
-      await sendMessage(chatId, rep);
+      await sendMessage(chatId, await reportToday());
       return;
     }
     if (parsed?.cmd === "ALL") {
-      const rep = await reportAll();
-      await sendMessage(chatId, rep);
+      await sendMessage(chatId, await reportAll());
       return;
     }
 
-    // thu hoạch
+    // nhập thu hoạch
     if (!parsed) {
       await sendMessage(
         chatId,
@@ -300,32 +281,42 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    const userName =
-      [from?.first_name, from?.last_name].filter(Boolean).join(" ") ||
-      from?.username ||
-      "unknown";
+    // Tạo Date theo KST (+09:00)
+    const now = new Date();
+    const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+    const dateStr = kst.toISOString().slice(0, 10); // YYYY-MM-DD
 
-    // ghi vào sheet
+    const viTri = parsed.viTri;
+    const dayG = parsed.dayG;
+    const maxG = dayG;         // mặc định
+    const baoTau = dayG;       // mặc định
+    const baoChuan = dayG;     // mặc định (sau này mình sẽ làm quy đổi theo bãi nếu bạn muốn)
+    const giaK = parsed.giaK;
+    const thuLoWon = baoChuan * giaK;
+
     const row = [
-      new Date().toISOString(),
-      parsed.bai,
-      parsed.bao,
-      parsed.gia_k,
-      parsed.tinh_trang || "",
-      parsed.ghi_chu || "",
-      userName,
-      String(chatId),
-      String(msgId || ""),
+      now.toISOString(),                 // A Timestamp
+      dateStr,                           // B Date
+      userName,                          // C Thu
+      viTri,                             // D ViTri
+      dayG,                              // E DayG
+      maxG,                              // F MaxG
+      parsed.tinhHinh || "Cắt sạch",     // G TinhHinh
+      baoTau,                            // H BaoTau
+      baoChuan,                          // I BaoChuan
+      giaK,                              // J GiaK
+      thuLoWon,                          // K ThuLoWon
+      parsed.note || ""                  // L Note
     ];
-    await appendRow("THU_HOACH", row);
+
+    await appendRow("DATA", row);
 
     await sendMessage(
       chatId,
-      `✅ Đã lưu: ${parsed.bai} • ${parsed.bao} bao • ${parsed.gia_k}k` +
-        (parsed.tinh_trang ? ` • ${parsed.tinh_trang}` : "")
+      `✅ Đã lưu: ${viTri} • ${baoChuan} bao • ${giaK}k • ${thuLoWon.toLocaleString()}k`
     );
   } catch (e) {
-    await log("ERROR", e?.message || e);
+    console.error("WEBHOOK ERROR:", e?.message || e);
   }
 });
 
