@@ -1,6 +1,6 @@
 /**
  * KIM BOT – SỔ KIM THU HOẠCH RONG BIỂN
- * VERSION: KIM-SO-KIM-v1.3-EDIT-RECALC-SCHEDULE-2025-12-15
+ * VERSION: KIM-SO-KIM-v1.4-CUMULATIVE-CLEAN-SCHEDULE-2025-12-15
  */
 
 import express from "express";
@@ -10,7 +10,7 @@ import { google } from "googleapis";
 const app = express();
 app.use(express.json());
 
-const VERSION = "KIM-SO-KIM-v1.3-EDIT-RECALC-SCHEDULE-2025-12-15";
+const VERSION = "KIM-SO-KIM-v1.4-CUMULATIVE-CLEAN-SCHEDULE-2025-12-15";
 console.log("🚀 RUNNING:", VERSION);
 
 /* ================= ENV ================= */
@@ -127,30 +127,25 @@ async function setReplyMenu(chatId) {
 function kst(d = new Date()) {
   return new Date(d.getTime() + 9 * 3600 * 1000);
 }
-
+function ymd(d) {
+  return d.toISOString().slice(0, 10);
+}
 function fmtDayVN(d) {
   const days = ["Chủ Nhật","Thứ Hai","Thứ Ba","Thứ Tư","Thứ Năm","Thứ Sáu","Thứ Bảy"];
   return `${days[d.getDay()]}, ${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}`;
 }
-
-function ymd(d) {
-  return d.toISOString().slice(0,10);
-}
-
 function moneyToTrieu(won) {
   return `${Math.round(won / 1_000_000)} triệu`;
 }
-
 function baoChuan(baoTau) {
   return Math.round(baoTau * BAO_RATE);
 }
-
 function nextCutForecast(lastCleanYmd) {
   if (!lastCleanYmd) return "";
   const d = new Date(lastCleanYmd + "T00:00:00");
   const next = new Date(d.getTime() + CUT_INTERVAL_DAYS * 86400000);
-  const dd = String(next.getDate()).padStart(2,"0");
-  const mm = String(next.getMonth()+1).padStart(2,"0");
+  const dd = String(next.getDate()).padStart(2, "0");
+  const mm = String(next.getMonth() + 1).padStart(2, "0");
   const yyyy = next.getFullYear();
   return `${dd}/${mm}/${yyyy}`;
 }
@@ -161,7 +156,7 @@ function parseRowToObj(r) {
     ts: r[0] || "",
     date: r[1] || "",
     thu: r[2] || "",
-    bai: r[3] || "",
+    bai: (r[3] ?? "").toString().trim(), // <-- ép string + trim để "34" luôn đúng
     dayG: Number(r[4] || 0),
     maxG: Number(r[5] || 0),
     tinhHinh: r[6] || "",
@@ -176,12 +171,12 @@ function parseRowToObj(r) {
 function currentMonthKeyKST() {
   const now = kst();
   const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth()+1).padStart(2,"0");
+  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
 }
 function rowMonthKey(obj) {
   if (!obj.date || obj.date.length < 7) return "";
-  return obj.date.slice(0,7);
+  return obj.date.slice(0, 7);
 }
 
 /* ================= PARSE INPUT ================= */
@@ -199,66 +194,75 @@ function parseWorkLine(text) {
   let g = null, b = null, k = null, d = null;
   let note = "";
 
-  const noteIdx = parts.findIndex(p => p.toLowerCase().startsWith("note:"));
+  const noteIdx = parts.findIndex((p) => p.toLowerCase().startsWith("note:"));
   if (noteIdx >= 0) note = parts.slice(noteIdx).join(" ").replace(/^note:\s*/i, "").trim();
 
   for (const p of parts) {
-    if (/^\d+g$/i.test(p)) g = +p.slice(0,-1);
-    if (/^\d+b$/i.test(p)) b = +p.slice(0,-1);
-    if (/^\d+k$/i.test(p)) k = +p.slice(0,-1);
-    if (/^\d+d$/i.test(p)) d = +p.slice(0,-1);
+    if (/^\d+g$/i.test(p)) g = +p.slice(0, -1);
+    if (/^\d+b$/i.test(p)) b = +p.slice(0, -1);
+    if (/^\d+k$/i.test(p)) k = +p.slice(0, -1);
+    if (/^\d+d$/i.test(p)) d = +p.slice(0, -1);
   }
 
   if (!b || !k) return null;
-  if (!g) g = MAX_DAY[viTri];
+  if (!g) g = MAX_DAY[viTri]; // thiếu g -> coi như cắt sạch 1 lần
 
   return { type: "WORK", viTri, g, b, k, d, note };
 }
 
-/* ================= VÒNG ================= */
-function assignVongPerBai(objs) {
-  const sorted = [...objs].sort((a,b) => (a.date+a.ts).localeCompare(b.date+b.ts));
-  const done = new Map();
-  return sorted.map(o => {
-    if (!o.bai) return { ...o, vong: 0, isClean: false };
-    const isClean = o.maxG > 0 && o.dayG === o.maxG;
-    const d = done.get(o.bai) || 0;
-    const vong = isClean ? d + 1 : Math.max(1, d + 1);
-    if (isClean) done.set(o.bai, d + 1);
-    return { ...o, vong, isClean };
-  });
-}
+const SYNTAX_ERROR =
+`❌ Nhập sai rồi bạn iu ơi 😅
+Ví dụ:
+A27 60b 220k
+A27 30g 40b 220k
+A27 80b 120k 5d`;
 
-/* ================= FIND ROWS ================= */
-async function findLastRowIndexAny(rows) {
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const o = parseRowToObj(rows[i]);
-    if (o.ts || o.date || o.thu || o.bai || o.tinhHinh) return 2 + i;
-  }
-  return null;
-}
+/* ================= CUMULATIVE CLEAN + VONG =================
+   Quy tắc mới:
+   - Cắt sạch khi tổng g trong cùng 1 vòng đạt Max
+   - Dòng "đạt đủ" sẽ được coi là CẮT SẠCH, vòng tăng +1 và reset cộng dồn về 0 cho vòng tiếp theo
+*/
+function computeProgress(objs) {
+  const sorted = [...objs].sort((a, b) => (a.date + a.ts).localeCompare(b.date + b.ts));
 
-async function findLastWorkRowIndexForUser(rows, userName, viTri) {
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const o = parseRowToObj(rows[i]);
-    if (o.thu === userName && o.bai === viTri && o.won >= 0) return 2 + i;
-  }
-  return null;
-}
+  const sumG = new Map();      // bai -> g đã cộng trong vòng hiện tại
+  const vongDone = new Map();  // bai -> số vòng đã hoàn thành
 
-async function getLastRow(rows) {
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const o = parseRowToObj(rows[i]);
-    if (o.ts || o.date || o.thu || o.bai || o.tinhHinh) return { idx: 2 + i, obj: o };
+  const out = [];
+  for (const o of sorted) {
+    const bai = (o.bai || "").toString().trim();
+    if (!bai || !MAX_DAY[bai]) {
+      out.push({ ...o, vong: 0, isClean: false, progG: 0 });
+      continue;
+    }
+
+    const maxG = MAX_DAY[bai];
+    const prevSum = sumG.get(bai) || 0;
+    const nextSum = Math.min(maxG, prevSum + (o.dayG || 0));
+    const willClean = nextSum >= maxG;
+
+    const done = vongDone.get(bai) || 0;
+    const vong = done + 1; // đang ở vòng này
+
+    out.push({ ...o, vong, isClean: willClean, progG: nextSum, maxG });
+
+    if (willClean) {
+      vongDone.set(bai, done + 1);
+      sumG.set(bai, 0); // reset sang vòng mới
+    } else {
+      sumG.set(bai, nextSum);
+    }
   }
-  return null;
+  return out;
 }
 
 /* ================= OUTPUT TEMPLATE ================= */
-async function sendSoKim(chatId, userName, objForCmd, totalToNowWon, vongForCmd, forecast) {
+async function sendSoKim(chatId, userName, objForCmd, totalToNowWon, vongForCmd, forecast, progGForCmd) {
   const dateObj = new Date(objForCmd.date + "T00:00:00");
-  const isClean = objForCmd.maxG > 0 && objForCmd.dayG === objForCmd.maxG;
+
+  const isClean = progGForCmd >= objForCmd.maxG; // <-- dựa trên cộng dồn
   const tinhText = isClean ? "Cắt sạch" : "Chưa sạch";
+  const showG = isClean ? objForCmd.maxG : progGForCmd; // hiển thị g đã đạt tới đâu
 
   const text =
 `--- 🌊 SỔ KIM (Vòng: ${vongForCmd}) ---
@@ -266,7 +270,7 @@ Chào ${userName}, đây là kết quả của lệnh bạn gửi
 
 📅 Ngày: ${fmtDayVN(dateObj)}
 📍 Vị trí: ${objForCmd.bai}
-✂️ Tình hình: ${tinhText} (${objForCmd.dayG}/${objForCmd.maxG} dây)
+✂️ Tình hình: ${tinhText} (${showG}/${objForCmd.maxG} dây)
 📦 Sản lượng: ${objForCmd.baoTau} bao lớn (≈ ${objForCmd.baoChuan} bao tính tiền)
 💰 Giá: ${objForCmd.giaK}k
 
@@ -277,13 +281,6 @@ ${forecast ? `(Dự báo nhanh: Bãi này sẽ cắt lại vào ${forecast})` : 
 
   await send(chatId, text);
 }
-
-const SYNTAX_ERROR =
-`❌ Nhập sai rồi bạn iu ơi 😅
-Ví dụ:
-A27 60b 220k
-A27 30g 40b 220k
-A27 80b 120k 5d`;
 
 /* ================= REPORTS ================= */
 async function reportMonth(chatId) {
@@ -317,18 +314,19 @@ async function reportMonth(chatId) {
   );
 }
 
+// Thống kê vòng = cộng DOANH THU của những dòng "đạt CẮT SẠCH" của tất cả bãi
 async function reportByVong(chatId) {
   const rows = await getRows();
   const base = rows.map(parseRowToObj);
-  const withV = assignVongPerBai(base);
+  const withP = computeProgress(base);
 
-  const sumByV = new Map();
-  for (const o of withV) {
+  const sumByV = new Map(); // vong -> won (chỉ dòng clean)
+  for (const o of withP) {
     if (!o.bai || !o.isClean) continue;
     sumByV.set(o.vong, (sumByV.get(o.vong) || 0) + (o.won || 0));
   }
 
-  const list = [...sumByV.entries()].sort((a,b)=>a[0]-b[0]);
+  const list = [...sumByV.entries()].sort((a, b) => a[0] - b[0]);
   if (!list.length) return send(chatId, "🔁 Chưa có dữ liệu cắt sạch để tính theo vòng.");
 
   let out = "🔁 THỐNG KÊ THEO VÒNG (cộng tất cả lượt CẮT SẠCH của mọi bãi)\n";
@@ -336,14 +334,15 @@ async function reportByVong(chatId) {
   await send(chatId, out.trim());
 }
 
+// Thống kê theo bãi: V1/V2/V3... (chỉ tính dòng clean) + tổng + forecast
 async function reportByBai(chatId) {
   const rows = await getRows();
   const base = rows.map(parseRowToObj);
-  const withV = assignVongPerBai(base);
+  const withP = computeProgress(base);
 
-  const map = new Map();
-  for (const o of withV) {
-    if (!o.bai) continue;
+  const map = new Map(); // bai -> { vongs:Map, total, lastClean }
+  for (const o of withP) {
+    if (!o.bai || !MAX_DAY[o.bai]) continue;
     if (!map.has(o.bai)) map.set(o.bai, { vongs: new Map(), total: 0, lastClean: "" });
 
     const cur = map.get(o.bai);
@@ -354,15 +353,17 @@ async function reportByBai(chatId) {
     }
   }
 
-  const items = [...map.entries()].sort((a,b)=> (b[1].total||0) - (a[1].total||0));
+  const items = [...map.entries()].sort((a, b) => (b[1].total || 0) - (a[1].total || 0));
   if (!items.length) return send(chatId, "📍 Chưa có dữ liệu cắt sạch để thống kê theo bãi.");
 
   let out = "📍 THỐNG KÊ THEO BÃI (theo vòng 1/2/3... và tổng)\n";
   for (const [bai, v] of items) {
-    const vongs = [...v.vongs.entries()].sort((a,b)=>a[0]-b[0])
-      .map(([vv, won]) => `V${vv}: ${won.toLocaleString()} ₩`).join(" | ");
-    const forecast = nextCutForecast(v.lastClean);
+    const vongs = [...v.vongs.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([vv, won]) => `V${vv}: ${won.toLocaleString()} ₩`)
+      .join(" | ");
 
+    const forecast = nextCutForecast(v.lastClean);
     out += `\n• ${bai}: ${vongs || "(chưa có vòng)"}\n  Tổng: ${v.total.toLocaleString()} ₩`;
     if (forecast) out += `\n  ⤷ Dự báo cắt lại: ${forecast}`;
     out += "\n";
@@ -370,42 +371,42 @@ async function reportByBai(chatId) {
   await send(chatId, out.trim());
 }
 
+// Lịch cắt: dựa trên lần "đạt CẮT SẠCH" gần nhất (theo cộng dồn)
 async function reportScheduleAll(chatId) {
   const rows = await getRows();
   const base = rows.map(parseRowToObj);
+  const withP = computeProgress(base);
 
-  // lấy ngày cắt sạch gần nhất cho mỗi bãi
   const lastCleanByBai = {};
   for (const bai of Object.keys(MAX_DAY)) lastCleanByBai[bai] = "";
 
-  const sorted = [...base].sort((a,b)=> (a.date+a.ts).localeCompare(b.date+b.ts));
-  for (const o of sorted) {
-    if (!o.bai) continue;
-    const isClean = o.maxG > 0 && o.dayG === o.maxG;
-    if (isClean) lastCleanByBai[o.bai] = o.date;
+  for (const o of withP) {
+    if (!o.bai || !MAX_DAY[o.bai]) continue;
+    if (o.isClean) lastCleanByBai[o.bai] = o.date;
   }
 
-  let out = `📆 LỊCH CẮT DỰ KIẾN (tất cả bãi)\n(Theo lần CẮT SẠCH gần nhất + ${CUT_INTERVAL_DAYS} ngày)\n`;
-  const order = Object.keys(MAX_DAY); // giữ đúng thứ tự cấu hình
+  let out = `📆 LỊCH CẮT DỰ KIẾN (tất cả bãi)
+(Theo lần CẮT SẠCH gần nhất + ${CUT_INTERVAL_DAYS} ngày)\n`;
+
+  const order = Object.keys(MAX_DAY);
   for (const bai of order) {
     const last = lastCleanByBai[bai];
     if (!last) {
       out += `\n• ${bai}: (chưa có dữ liệu cắt sạch)`;
-      continue;
+    } else {
+      out += `\n• ${bai}: ${nextCutForecast(last)}`;
     }
-    const next = nextCutForecast(last);
-    out += `\n• ${bai}: ${next}`;
   }
   await send(chatId, out.trim());
 }
 
 async function showLastRow(chatId) {
   const rows = await getRows();
-  const last = await getLastRow(rows);
-  if (!last) return send(chatId, "Chưa có dữ liệu.");
-  const o = last.obj;
-  await send(chatId,
-`🧾 DÒNG GẦN NHẤT (row ${last.idx})
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const o = parseRowToObj(rows[i]);
+    if (o.ts || o.date || o.thu || o.bai || o.tinhHinh) {
+      await send(chatId,
+`🧾 DÒNG GẦN NHẤT (row ${2 + i})
 Date: ${o.date}
 Thu: ${o.thu}
 Bãi: ${o.bai}
@@ -414,7 +415,11 @@ Bao: ${o.baoTau} | Chuẩn: ${o.baoChuan}
 Giá: ${o.giaK}k
 Won: ${o.won.toLocaleString()} ₩
 Note: ${o.note || ""}`.trim()
-  );
+      );
+      return;
+    }
+  }
+  await send(chatId, "Chưa có dữ liệu.");
 }
 
 async function sendHelp(chatId) {
@@ -422,7 +427,7 @@ async function sendHelp(chatId) {
 `✅ Cú pháp đúng:
 A27 60b 220k
 A27 30g 40b 220k
-A27 80b 120k 5d
+34 55g 35b 120k 13d
 
 ✅ Nghỉ:
 nghỉ gió
@@ -453,6 +458,22 @@ function checkPin(chatId, text) {
     return p.type;
   }
   return "WRONG";
+}
+
+async function findLastRowIndexAny(rows) {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const o = parseRowToObj(rows[i]);
+    if (o.ts || o.date || o.thu || o.bai || o.tinhHinh) return 2 + i;
+  }
+  return null;
+}
+
+async function findLastWorkRowIndexForUser(rows, userName, viTri) {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const o = parseRowToObj(rows[i]);
+    if (o.thu === userName && o.bai === viTri) return 2 + i;
+  }
+  return null;
 }
 
 /* ================= MAIN HANDLER ================= */
@@ -502,7 +523,7 @@ async function handleTextMessage(msg) {
 `✏️ SỬA DÒNG GẦN NHẤT
 Bạn gõ:  sua <cú pháp mới>
 Ví dụ:  sua A27 60b 200k
-Ví dụ:  sua A27 30g 40b 220k`
+Ví dụ:  sua 34 55g 35b 120k 13d`
     );
     return;
   }
@@ -524,8 +545,6 @@ Ví dụ:  sua A27 30g 40b 220k`
 
     const bc = baoChuan(parsed.b);
     const money = bc * parsed.k * 1000;
-    const isClean = parsed.g === MAX_DAY[parsed.viTri];
-    const tinhHinh = isClean ? "Cắt sạch" : "Chưa sạch";
 
     const oldObj = parseRowToObj(rows[rowIdx - 2]);
     const newRow = [
@@ -535,7 +554,7 @@ Ví dụ:  sua A27 30g 40b 220k`
       parsed.viTri,
       parsed.g,
       MAX_DAY[parsed.viTri],
-      tinhHinh,
+      "Tạm", // sẽ hiển thị theo cộng dồn, không dựa cột này nữa
       parsed.b,
       bc,
       parsed.k,
@@ -543,50 +562,44 @@ Ví dụ:  sua A27 30g 40b 220k`
       parsed.note || oldObj.note || "",
     ];
 
-    // update sheet
     await updateRow(rowIdx, newRow);
 
-    // ====== RECALC & SEND FULL SỔ KIM (đúng yêu cầu) ======
+    // RECALC theo cộng dồn
     const rowsAfter = await getRows();
     const objsAfter = rowsAfter.map(parseRowToObj);
+    const totalToNow = objsAfter.reduce((s, o) => s + (o.won || 0), 0);
 
-    // total tới thời điểm này = sum toàn DATA (sau sửa)
-    const totalToNow = objsAfter.reduce((s,o)=> s + (o.won || 0), 0);
-
-    // vòng của dòng vừa sửa: đếm số lần cắt sạch của bãi đó theo thời gian
-    const withV = assignVongPerBai(objsAfter);
-    // tìm đúng record vừa sửa bằng ts cũ (ổn nhất)
+    const withP = computeProgress(objsAfter);
     const tsKey = newRow[0];
-    const match = withV.find(o => o.ts === tsKey && o.bai === parsed.viTri);
-    const vongThis = match?.vong || (isClean ? 1 : 1);
+    const rec = withP.find((o) => o.ts === tsKey && o.bai === parsed.viTri);
 
-    // forecast: lấy lần cắt sạch gần nhất của bãi (sau sửa), nếu dòng này là sạch thì mốc = ngày dòng này
+    const vongThis = rec?.vong || 1;
+    const progG = rec?.progG ?? parsed.g;
+
     let lastClean = "";
-    for (let i = withV.length - 1; i >= 0; i--) {
-      const o = withV[i];
+    for (let i = withP.length - 1; i >= 0; i--) {
+      const o = withP[i];
       if (o.bai === parsed.viTri && o.isClean) { lastClean = o.date; break; }
     }
-    const forecast = nextCutForecast(isClean ? ymd(workDate) : lastClean);
+    const forecast = nextCutForecast(lastClean);
 
     await sendSoKim(chatId, userName, {
       date: ymd(workDate),
       bai: parsed.viTri,
-      dayG: parsed.g,
       maxG: MAX_DAY[parsed.viTri],
       baoTau: parsed.b,
       baoChuan: bc,
       giaK: parsed.k,
       won: money,
-    }, totalToNow, vongThis, forecast);
+    }, totalToNow, vongThis, forecast, progG);
 
     return;
   }
 
-  // WORK parse
+  // WORK / NO_WORK
   const parsed = parseWorkLine(textRaw);
   if (!parsed) return send(chatId, SYNTAX_ERROR);
 
-  // NO_WORK
   if (parsed.type === "NO_WORK") {
     const d = kst();
     await appendRow([
@@ -597,10 +610,7 @@ Ví dụ:  sua A27 30g 40b 220k`
       0,
       0,
       parsed.tinhHinh,
-      0,
-      0,
-      0,
-      0,
+      0,0,0,0,
       "",
     ]);
     await send(chatId, `✅ Đã ghi: ${parsed.tinhHinh}.`);
@@ -618,22 +628,18 @@ Ví dụ:  sua A27 30g 40b 220k`
 
   const rows = await getRows();
   const objs = rows.map(parseRowToObj);
-  const totalBefore = objs.reduce((s,o)=>s+(o.won||0),0);
+  const totalBefore = objs.reduce((s, o) => s + (o.won || 0), 0);
 
-  const isClean = parsed.g === MAX_DAY[parsed.viTri];
-  const vongDone = objs.filter(o => o.bai === parsed.viTri && o.maxG > 0 && o.dayG === o.maxG).length;
-  const vongThis = isClean ? (vongDone + 1) : Math.max(1, vongDone + 1);
-
-  const totalToNow = totalBefore + money;
-
+  // append trước
+  const ts = new Date().toISOString();
   await appendRow([
-    new Date().toISOString(),
+    ts,
     ymd(workDate),
     userName,
     parsed.viTri,
     parsed.g,
     MAX_DAY[parsed.viTri],
-    isClean ? "Cắt sạch" : "Chưa sạch",
+    "Tạm",
     parsed.b,
     bc,
     parsed.k,
@@ -641,24 +647,34 @@ Ví dụ:  sua A27 30g 40b 220k`
     parsed.note || "",
   ]);
 
-  // forecast
+  // recalc sau khi append (để biết progG/vong/isClean đúng theo cộng dồn)
+  const rowsAfter = await getRows();
+  const objsAfter = rowsAfter.map(parseRowToObj);
+  const withP = computeProgress(objsAfter);
+
+  const rec = withP.find((o) => o.ts === ts);
+  const vongThis = rec?.vong || 1;
+  const progG = rec?.progG ?? parsed.g;
+
+  // lastClean để forecast
   let lastClean = "";
-  for (let i = objs.length - 1; i >= 0; i--) {
-    const o = objs[i];
-    if (o.bai === parsed.viTri && o.maxG > 0 && o.dayG === o.maxG) { lastClean = o.date; break; }
+  for (let i = withP.length - 1; i >= 0; i--) {
+    const o = withP[i];
+    if (o.bai === parsed.viTri && o.isClean) { lastClean = o.date; break; }
   }
-  const forecast = nextCutForecast(isClean ? ymd(workDate) : lastClean);
+  const forecast = nextCutForecast(lastClean);
+
+  const totalToNow = totalBefore + money;
 
   await sendSoKim(chatId, userName, {
     date: ymd(workDate),
     bai: parsed.viTri,
-    dayG: parsed.g,
     maxG: MAX_DAY[parsed.viTri],
     baoTau: parsed.b,
     baoChuan: bc,
     giaK: parsed.k,
     won: money,
-  }, totalToNow, vongThis, forecast);
+  }, totalToNow, vongThis, forecast, progG);
 }
 
 /* ================= WEBHOOK ================= */
