@@ -1,8 +1,7 @@
 /**
- * ============================================
- *  KIM BOT 2025 – DATA SHEET FINAL
- *  VERSION: KIM-BOT-DATA-v2025.12.15-FINAL
- * ============================================
+ * KIM BOT – SỔ KIM THU HOẠCH RONG BIỂN
+ * FINAL – ONE SHOT – NO MORE EDIT
+ * VERSION: KIM-SO-KIM-FINAL-LOCK-2025-12-15
  */
 
 import express from "express";
@@ -12,183 +11,158 @@ import { google } from "googleapis";
 const app = express();
 app.use(express.json());
 
-/* ================== VERSION LOG ================== */
-console.log("🚀 RUNNING VERSION: KIM-BOT-DATA-v2025.12.15-FINAL");
+console.log("🚀 RUNNING: KIM-SO-KIM-FINAL-LOCK-2025-12-15");
 
-/* ================== ENV ================== */
+/* ================= ENV ================= */
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
-
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_APPLICATION_CREDENTIALS =
-  process.env.GOOGLE_APPLICATION_CREDENTIALS || "/etc/secrets/google-service-account.json";
+  process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+  "/etc/secrets/google-service-account.json";
 
-/* ================== BASIC ROUTES ================== */
-app.get("/", (req, res) => res.send("OK - KIM BOT DATA FINAL"));
-app.get("/ping", (req, res) => res.json({ ok: true, version: "KIM-BOT-DATA-v2025.12.15-FINAL" }));
+/* ================= CONFIG ================= */
+const MAX_DAY = {
+  A14: 69, A27: 60, A22: 60, "34": 109,
+  B17: 69, B24: 69, C11: 59, C12: 59,
+};
+const BAO_RATE = 1.4;
 
-/* ================== GOOGLE SHEET ================== */
+/* ================= BASIC ================= */
+app.get("/", (_, res) => res.send("KIM BOT OK"));
+app.get("/ping", (_, res) => res.json({ ok: true }));
+
+/* ================= SHEET ================= */
 const auth = new google.auth.GoogleAuth({
   keyFile: GOOGLE_APPLICATION_CREDENTIALS,
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 const sheets = google.sheets({ version: "v4", auth });
 
-async function appendRow(row) {
-  await sheets.spreadsheets.values.append({
+const appendRow = (row) =>
+  sheets.spreadsheets.values.append({
     spreadsheetId: GOOGLE_SHEET_ID,
     range: "DATA!A1",
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [row] },
   });
-}
 
-async function getAllRows() {
-  const res = await sheets.spreadsheets.values.get({
+const getRows = async () => {
+  const r = await sheets.spreadsheets.values.get({
     spreadsheetId: GOOGLE_SHEET_ID,
     range: "DATA!A2:L",
   });
-  return res.data.values || [];
-}
+  return r.data.values || [];
+};
 
-/* ================== TELEGRAM ================== */
-async function sendMessage(chatId, text) {
-  return fetch(`${TELEGRAM_API}/sendMessage`, {
+/* ================= TELEGRAM ================= */
+const send = (id, text) =>
+  fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify({ chat_id: id, text }),
   });
-}
 
-/* ================== PARSER ================== */
-function parseInput(text) {
-  const lower = text.toLowerCase();
+/* ================= TIME ================= */
+const kst = (d = new Date()) => new Date(d.getTime() + 9 * 3600 * 1000);
+const fmt = (d) =>
+  ["Chủ Nhật","Thứ Hai","Thứ Ba","Thứ Tư","Thứ Năm","Thứ Sáu","Thứ Bảy"][d.getDay()]
+  + `, ${String(d.getDate()).padStart(2,"0")}/${String(d.getMonth()+1).padStart(2,"0")}`;
 
-  if (lower.includes("tổng hôm nay")) return { cmd: "TODAY" };
-  if (lower.includes("tổng cả vụ")) return { cmd: "ALL" };
+/* ================= PARSE ================= */
+function parse(text) {
+  const t = text.toLowerCase();
 
-  const m = text.match(/^\s*([A-Za-z]?\d{1,3})\s+(\d+)\s*(?:b|bao)?\s+(\d+)\s*(?:k)?\s*(.*)$/i);
-  if (!m) return null;
+  if (t.includes("nghỉ gió") || t.includes("làm bờ"))
+    return { type: "NO_WORK", tinhHinh: "Làm bờ / Nghỉ gió" };
 
-  return {
-    viTri: m[1].toUpperCase(),
-    dayG: Number(m[2]),
-    giaK: Number(m[3]),
-    tinhHinh: m[4]?.trim() || "Cắt sạch",
-  };
-}
+  const parts = text.split(/\s+/);
+  const viTri = parts[0]?.toUpperCase();
+  if (!MAX_DAY[viTri]) return null;
 
-/* ================== REPORT ================== */
-function todayKST() {
-  const now = new Date();
-  const kst = new Date(now.getTime() + 9 * 3600 * 1000);
-  return kst.toISOString().slice(0, 10);
-}
-
-async function reportToday() {
-  const rows = await getAllRows();
-  const today = todayKST();
-
-  let total = 0;
-  let money = 0;
-
-  for (const r of rows) {
-    if (r[1] === today) {
-      total += Number(r[8] || 0);
-      money += Number(r[10] || 0);
-    }
+  let g, b, k, d;
+  for (const p of parts) {
+    if (p.endsWith("g")) g = +p.slice(0,-1);
+    if (p.endsWith("b")) b = +p.slice(0,-1);
+    if (p.endsWith("k")) k = +p.slice(0,-1);
+    if (p.endsWith("d")) d = +p.slice(0,-1);
   }
 
-  return `📊 TỔNG HÔM NAY (${today})\n• Bao chuẩn: ${total}\n• Thu lợi: ${money.toLocaleString()}k`;
+  if (!b || !k) return null;
+  if (!g) g = MAX_DAY[viTri];
+
+  return { type:"WORK", viTri, g, b, k, d };
 }
 
-async function reportAll() {
-  const rows = await getAllRows();
-  let total = 0;
-  let money = 0;
+/* ================= STATS ================= */
+const baoChuan = (b) => Math.round(b * BAO_RATE);
+const tongThu = async () => (await getRows()).reduce((s,r)=>s+(+r[10]||0),0);
+const vongBai = async (bai) =>
+  (await getRows()).filter(r=>r[3]===bai && +r[4]===+r[5]).length;
 
-  for (const r of rows) {
-    total += Number(r[8] || 0);
-    money += Number(r[10] || 0);
-  }
-
-  return `📈 TỔNG CẢ VỤ\n• Bao chuẩn: ${total}\n• Thu lợi: ${money.toLocaleString()}k`;
-}
-
-/* ================== WEBHOOK ================== */
-app.post("/webhook", async (req, res) => {
+/* ================= WEBHOOK ================= */
+app.post("/webhook", async (req,res)=>{
   res.sendStatus(200);
+  const m = req.body?.message;
+  if (!m?.text) return;
 
-  try {
-    const msg = req.body?.message;
-    if (!msg?.text) return;
+  const chat = m.chat.id;
+  const name = m.from.first_name || "Bạn";
+  const p = parse(m.text);
 
-    const chatId = msg.chat.id;
-    const text = msg.text;
-    const user =
-      msg.from.first_name ||
-      msg.from.username ||
-      "unknown";
-
-    if (text === "/start") {
-      await sendMessage(
-        chatId,
-        "✅ Bot KIM 2025 OK\nNhập: A27 60b 220k\nLệnh: Tổng hôm nay | Tổng cả vụ"
-      );
-      return;
-    }
-
-    const parsed = parseInput(text);
-
-    if (parsed?.cmd === "TODAY") {
-      await sendMessage(chatId, await reportToday());
-      return;
-    }
-
-    if (parsed?.cmd === "ALL") {
-      await sendMessage(chatId, await reportAll());
-      return;
-    }
-
-    if (!parsed) {
-      await sendMessage(chatId, "❌ Sai cú pháp. VD: A27 60b 220k");
-      return;
-    }
-
-    const now = new Date();
-    const dateKST = todayKST();
-
-    const baoChuan = parsed.dayG;
-    const thuLo = baoChuan * parsed.giaK;
-
-    const row = [
-      now.toISOString(),       // A Timestamp
-      dateKST,                 // B Date
-      user,                    // C Thu
-      parsed.viTri,            // D ViTri
-      parsed.dayG,             // E DayG
-      parsed.dayG,             // F MaxG
-      parsed.tinhHinh,         // G TinhHinh
-      parsed.dayG,             // H BaoTau
-      baoChuan,                // I BaoChuan
-      parsed.giaK,             // J GiaK
-      thuLo,                   // K ThuLoWon
-      ""                        // L Note
-    ];
-
-    await appendRow(row);
-
-    await sendMessage(
-      chatId,
-      `✅ Đã lưu: ${parsed.viTri} • ${baoChuan} bao • ${parsed.giaK}k • ${thuLo.toLocaleString()}k`
-    );
-  } catch (e) {
-    console.error("❌ WEBHOOK ERROR:", e.message);
+  if (!p) {
+    await send(chat,
+`❌ Nhập sai rồi bạn iu ơi 😅
+Ví dụ:
+A27 60b 220k
+A27 30g 40b 220k
+A27 80b 120k 5d`);
+    return;
   }
+
+  const now = kst();
+  if (p.type==="NO_WORK") {
+    await appendRow([new Date().toISOString(), now.toISOString().slice(0,10), name,"",0,0,p.tinhHinh,0,0,0,0,""]);
+    return;
+  }
+
+  const date = p.d ? new Date(now.getFullYear(),now.getMonth(),p.d) : new Date(now-86400000);
+  const bc = baoChuan(p.b);
+  const money = bc * p.k * 1000;
+  const vong = (await vongBai(p.viTri)) + (p.g===MAX_DAY[p.viTri]?1:0);
+  const total = (await tongThu()) + money;
+
+  await appendRow([
+    new Date().toISOString(),
+    date.toISOString().slice(0,10),
+    name,
+    p.viTri,
+    p.g,
+    MAX_DAY[p.viTri],
+    p.g===MAX_DAY[p.viTri]?"Cắt sạch":"Chưa sạch",
+    p.b,
+    bc,
+    p.k,
+    money,
+    ""
+  ]);
+
+  await send(chat,
+`--- 🌊 SỔ KIM (Vòng: ${vong}) ---
+Chào ${name}, đây là kết quả của lệnh bạn gửi
+
+📅 Ngày: ${fmt(date)}
+📍 Vị trí: ${p.viTri}
+✂️ Tình hình: ${p.g===MAX_DAY[p.viTri]?"Cắt sạch":"Chưa sạch"} (${p.g}/${MAX_DAY[p.viTri]} dây)
+📦 Sản lượng: ${p.b} bao lớn (≈ ${bc} bao tính tiền)
+💰 Giá: ${p.k}k
+
+💵 THU HÔM NAY: ${money.toLocaleString()} ₩
+🏆 TỔNG THU TỚI THỜI ĐIỂM NÀY: ${Math.round(total/1_000_000)} triệu ₩
+----------------------------------
+(Dự báo nhanh: Bãi này sẽ cắt lại vào 30/12/2025)`
+  );
 });
 
-/* ================== START ================== */
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log("✅ KIM BOT running on port", PORT);
-});
+/* ================= START ================= */
+app.listen(process.env.PORT||10000,()=>console.log("✅ KIM BOT READY"));
