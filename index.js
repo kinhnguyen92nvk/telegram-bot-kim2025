@@ -59,7 +59,7 @@ const GOOGLE_APPLICATION_CREDENTIALS =
   "/etc/secrets/google-service-account.json";
 
 const CUT_INTERVAL_DAYS = Number(process.env.CUT_INTERVAL_DAYS || 15);
-const BAO_RATE = 1.4;
+const BAO_RATE = 1.7;
 
 const CONFIRM_CODE = "2525"; // ✅ chốt mã xóa
 
@@ -151,6 +151,7 @@ function buildMainKeyboard() {
     keyboard: [
       [{ text: "📅 Thống kê tháng này" }, { text: "🔁 Thống kê theo VÒNG" }],
       [{ text: "📍 Thống kê theo BÃI" }, { text: "📆 Lịch cắt các bãi" }],
+      [{ text: "📋 Danh sách lệnh đã gửi" }],
       [{ text: "✏️ Sửa dòng gần nhất" }, { text: "🗑️ Xóa dòng gần nhất" }],
       [{ text: "⚠️ XÓA SẠCH DỮ LIỆU" }],
     ],
