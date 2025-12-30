@@ -645,6 +645,34 @@ function buildWorkProgress({ allObjs, bai, gDelta }) {
 
   return { max, newProgress, tinhHinh, vong };
 }
+/* ================== 📋 DANH SÁCH LỆNH ĐÃ GỬI ================== */
+async function reportCommandList(chatId) {
+  const rows = await getRows();
+
+  const objs = rows
+    .map(rowToObj)
+    .filter(
+      (o) =>
+        o.bai &&
+        o.baoTau > 0 &&
+        o.giaK > 0 &&
+        o.won > 0
+    );
+
+  if (!objs.length) {
+    await send(chatId, "📋 Chưa có lệnh WORK nào.", {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
+
+  let out = "📋 DANH SÁCH LỆNH ĐÃ CHỐT:\n\n";
+  objs.forEach((o) => {
+    out += `${o.bai} ${o.baoTau}b ${o.giaK}k\n`;
+  });
+
+  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
+}
 
 /* ================== MAIN HANDLER ================== */
 async function handleTextMessage(msg) {
