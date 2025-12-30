@@ -735,6 +735,7 @@ async function handleTextMessage(msg) {
   if (textRaw === "🔁 Thống kê theo VÒNG") return reportByVong(chatId);
   if (textRaw === "📍 Thống kê theo BÃI") return reportByBai(chatId);
   if (textRaw === "📆 Lịch cắt các bãi") return reportCutSchedule(chatId);
+  if (textRaw === "📋 Danh sách lệnh đã gửi") return reportCommandList(chatId);
 
   if (textRaw === "✏️ Sửa dòng gần nhất") {
     await send(
