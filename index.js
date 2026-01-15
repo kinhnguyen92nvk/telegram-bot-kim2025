@@ -501,21 +501,6 @@ function parseBaiMaxCommand(text) {
     max: Math.round(max),
   };
 }
- else if (parts[0].toLowerCase() === "sua_day") {
-    bai = parts[1];
-    max = parts[2];
-  } else if (parts[0].toLowerCase() === "sua" && parts[1]?.toLowerCase() === "day") {
-    bai = parts[2];
-    max = parts[3];
-  }
-
-  const baiU = String(bai || "").trim().toUpperCase();
-  const maxN = Number(max);
-
-  if (!baiU || !Number.isFinite(maxN) || maxN <= 0) return null;
-
-  return { action: isAdd ? "ADD" : "EDIT", bai: baiU, max: Math.round(maxN) };
-}
 function buildSaiCuPhapText() {
   return (
     "❌ Nhập sai rồi bạn iu ơi 😅\n" +
