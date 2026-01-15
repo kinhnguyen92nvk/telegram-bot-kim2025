@@ -470,12 +470,8 @@ function forecastForBai(state) {
 /* ================== OUTPUT TEMPLATE ================== */
 
 /* ================== PARSE: THÊM BÃI / SỬA SỐ DÂY ================== */
+
 function parseBaiMaxCommand(text) {
-  // support:
-  // - them bai A99 70
-  // - them_bai A99 70
-  // - sua day A27 65
-  // - sua_day A27 65
   const raw = (text || "").trim();
   const lower = raw.toLowerCase();
 
@@ -484,16 +480,28 @@ function parseBaiMaxCommand(text) {
 
   if (!isAdd && !isEdit) return null;
 
-  const parts = raw.split(/\s+/);
-  // "them" "bai" "A99" "70"  or "them_bai" "A99" "70"
-  let bai, max;
-  if (parts[0].toLowerCase() === "them_bai") {
-    bai = parts[1];
-    max = parts[2];
-  } else if (parts[0].toLowerCase() === "them" && parts[1]?.toLowerCase() === "bai") {
-    bai = parts[2];
-    max = parts[3];
-  } else if (parts[0].toLowerCase() === "sua_day") {
+  const body = raw
+    .replace(/^them bai\s+/i, "")
+    .replace(/^them_bai\s+/i, "")
+    .replace(/^sua day\s+/i, "")
+    .replace(/^sua_day\s+/i, "")
+    .trim();
+
+  const parts = body.split(/\s+/);
+  if (parts.length < 2) return null;
+
+  const max = Number(parts[parts.length - 1]);
+  if (!Number.isFinite(max) || max <= 0) return null;
+
+  const bai = parts.slice(0, -1).join(" ").toUpperCase();
+
+  return {
+    action: isAdd ? "ADD" : "EDIT",
+    bai,
+    max: Math.round(max),
+  };
+}
+ else if (parts[0].toLowerCase() === "sua_day") {
     bai = parts[1];
     max = parts[2];
   } else if (parts[0].toLowerCase() === "sua" && parts[1]?.toLowerCase() === "day") {
