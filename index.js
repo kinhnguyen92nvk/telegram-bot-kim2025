@@ -64,7 +64,15 @@ const BAO_RATE = 1.7;
 const CONFIRM_CODE = "2525"; // ✅ chốt mã xóa
 
 /* ================== CONFIG (MAX DÂY CHỐT) ================== */
-const MAX_DAY = {
+/**
+ * ✅ NÂNG CẤP: MAX_DAY giờ có thể thay đổi động (thêm bãi / sửa số dây)
+ * - Mặc định: DEFAULT_MAX_DAY (hard-code)
+ * - Runtime: load thêm từ Google Sheet tab "CONFIG" (A:B)
+ *   + A: Bãi (ví dụ A27)
+ *   + B: Max dây (ví dụ 60)
+ * - Khi thêm/sửa: bot sẽ lưu vào tab CONFIG để lần sau vẫn còn.
+ */
+const DEFAULT_MAX_DAY = {
   A14: 69,
   A27: 60,
   A22: 60,
@@ -74,6 +82,12 @@ const MAX_DAY = {
   C11: 59,
   C12: 59,
 };
+
+// MAX_DAY dùng trong toàn bộ logic (parse / forecast / thống kê...)
+let MAX_DAY = { ...DEFAULT_MAX_DAY };
+
+// Google Sheet tab để lưu cấu hình bãi
+const CONFIG_SHEET_NAME = "CONFIG";
 
 /* ================== BASIC ROUTES ================== */
 app.get("/", (_, res) => res.send("KIM BOT OK"));
@@ -128,6 +142,81 @@ async function clearAllData() {
   });
 }
 
+/* ================== GOOGLE SHEETS: CONFIG (BÃI / MAX DÂY) ================== */
+async function getConfigRows() {
+  // CONFIG!A2:B  => [[bai, max], ...]
+  const r = await sheets.spreadsheets.values.get({
+    spreadsheetId: GOOGLE_SHEET_ID,
+    range: `${CONFIG_SHEET_NAME}!A2:B`,
+  });
+  return r.data.values || [];
+}
+
+async function appendConfigRow(bai, max) {
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: GOOGLE_SHEET_ID,
+    range: `${CONFIG_SHEET_NAME}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[String(bai).toUpperCase(), Number(max)]] },
+  });
+}
+
+async function updateConfigRow(rowNumber1Based, bai, max) {
+  const range = `${CONFIG_SHEET_NAME}!A${rowNumber1Based}:B${rowNumber1Based}`;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: GOOGLE_SHEET_ID,
+    range,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[String(bai).toUpperCase(), Number(max)]] },
+  });
+}
+
+/**
+ * Upsert cấu hình bãi:
+ * - Nếu đã có bãi trong CONFIG => update dòng đó
+ * - Nếu chưa có => append dòng mới
+ */
+async function upsertBaiMaxToConfig(bai, max) {
+  const rows = await getConfigRows();
+  const baiU = String(bai).toUpperCase();
+
+  for (let i = 0; i < rows.length; i++) {
+    const rBai = String(rows[i]?.[0] || "").toUpperCase();
+    if (rBai === baiU) {
+      // row 1 is header, data starts at row 2
+      const rowNumber1Based = 2 + i;
+      await updateConfigRow(rowNumber1Based, baiU, max);
+      return { action: "UPDATED" };
+    }
+  }
+
+  await appendConfigRow(baiU, max);
+  return { action: "ADDED" };
+}
+
+/**
+ * Load cấu hình bãi từ tab CONFIG và merge vào MAX_DAY.
+ * - Nếu CONFIG chưa tồn tại / chưa có dữ liệu => bỏ qua (vẫn dùng default).
+ */
+async function loadBaiConfigFromSheet() {
+  try {
+    const rows = await getConfigRows();
+    const map = {};
+    for (const r of rows) {
+      const bai = String(r?.[0] || "").trim().toUpperCase();
+      const max = Number(r?.[1] || 0);
+      if (bai && Number.isFinite(max) && max > 0) map[bai] = max;
+    }
+
+    MAX_DAY = { ...DEFAULT_MAX_DAY, ...map };
+
+    console.log("✅ Loaded CONFIG bãi:", Object.keys(map).length, "items");
+  } catch (e) {
+    console.log("ℹ️ Không load được CONFIG (có thể chưa tạo tab CONFIG):", e?.message || e);
+    MAX_DAY = { ...DEFAULT_MAX_DAY };
+  }
+}
+
 /* ================== TELEGRAM HELPERS ================== */
 async function tg(method, payload) {
   const resp = await fetch(`${TELEGRAM_API}/${method}`, {
@@ -152,6 +241,7 @@ function buildMainKeyboard() {
       [{ text: "📅 Thống kê tháng này" }, { text: "🔁 Thống kê theo VÒNG" }],
       [{ text: "📍 Thống kê theo BÃI" }, { text: "📆 Lịch cắt các bãi" }],
       [{ text: "📋 Danh sách lệnh đã gửi" }],
+      [{ text: "➕ Thêm bãi" }, { text: "🧷 Sửa số dây bãi" }],
       [{ text: "✏️ Sửa dòng gần nhất" }, { text: "🗑️ Xóa dòng gần nhất" }],
       [{ text: "⚠️ XÓA SẠCH DỮ LIỆU" }],
     ],
@@ -378,6 +468,46 @@ function forecastForBai(state) {
 }
 
 /* ================== OUTPUT TEMPLATE ================== */
+
+/* ================== PARSE: THÊM BÃI / SỬA SỐ DÂY ================== */
+function parseBaiMaxCommand(text) {
+  // support:
+  // - them bai A99 70
+  // - them_bai A99 70
+  // - sua day A27 65
+  // - sua_day A27 65
+  const raw = (text || "").trim();
+  const lower = raw.toLowerCase();
+
+  const isAdd = lower.startsWith("them bai ") || lower.startsWith("them_bai ");
+  const isEdit = lower.startsWith("sua day ") || lower.startsWith("sua_day ");
+
+  if (!isAdd && !isEdit) return null;
+
+  const parts = raw.split(/\s+/);
+  // "them" "bai" "A99" "70"  or "them_bai" "A99" "70"
+  let bai, max;
+  if (parts[0].toLowerCase() === "them_bai") {
+    bai = parts[1];
+    max = parts[2];
+  } else if (parts[0].toLowerCase() === "them" && parts[1]?.toLowerCase() === "bai") {
+    bai = parts[2];
+    max = parts[3];
+  } else if (parts[0].toLowerCase() === "sua_day") {
+    bai = parts[1];
+    max = parts[2];
+  } else if (parts[0].toLowerCase() === "sua" && parts[1]?.toLowerCase() === "day") {
+    bai = parts[2];
+    max = parts[3];
+  }
+
+  const baiU = String(bai || "").trim().toUpperCase();
+  const maxN = Number(max);
+
+  if (!baiU || !Number.isFinite(maxN) || maxN <= 0) return null;
+
+  return { action: isAdd ? "ADD" : "EDIT", bai: baiU, max: Math.round(maxN) };
+}
 function buildSaiCuPhapText() {
   return (
     "❌ Nhập sai rồi bạn iu ơi 😅\n" +
@@ -737,6 +867,24 @@ async function handleTextMessage(msg) {
   if (textRaw === "📆 Lịch cắt các bãi") return reportCutSchedule(chatId);
   if (textRaw === "📋 Danh sách lệnh đã gửi") return reportCommandList(chatId);
 
+  if (textRaw === "➕ Thêm bãi") {
+    await send(
+      chatId,
+      `➕ THÊM BÃI MỚI\nBạn gõ theo mẫu:\n• them bai <Bãi> <SốDây>\nVí dụ:\n• them bai A99 70\n\nSau khi thêm, bãi sẽ dùng được như các bãi khác (thống kê, lịch cắt, nhập lệnh...).`,
+      { reply_markup: buildMainKeyboard() }
+    );
+    return;
+  }
+
+  if (textRaw === "🧷 Sửa số dây bãi") {
+    await send(
+      chatId,
+      `🧷 SỬA SỐ DÂY CỦA BÃI\nBạn gõ theo mẫu:\n• sua day <Bãi> <SốDâyMới>\nVí dụ:\n• sua day A27 65\n\nLưu ý: sửa số dây ảnh hưởng cách tính progress (E/max). Các chức năng khác giữ nguyên.`,
+      { reply_markup: buildMainKeyboard() }
+    );
+    return;
+  }
+
   if (textRaw === "✏️ Sửa dòng gần nhất") {
     await send(
       chatId,
@@ -759,6 +907,34 @@ async function handleTextMessage(msg) {
     await send(chatId, `⚠️ Xác nhận XOÁ SẠCH dữ liệu: nhập mã ${CONFIRM_CODE}`, {
       reply_markup: buildMainKeyboard(),
     });
+    return;
+  }
+
+
+  // ====== THÊM BÃI / SỬA SỐ DÂY: "them bai ..." | "sua day ..." ======
+  const baiMaxCmd = parseBaiMaxCommand(textRaw);
+  if (baiMaxCmd) {
+    const { action, bai, max } = baiMaxCmd;
+
+    // ADD: không cho ghi đè (để tránh thay đổi nhầm). Muốn đổi thì dùng "sua day".
+    if (action === "ADD" && MAX_DAY[bai]) {
+      await send(
+        chatId,
+        `⚠️ Bãi ${bai} đã tồn tại (${MAX_DAY[bai]} dây).\nNếu bạn muốn đổi số dây, hãy dùng: sua day ${bai} <SốDâyMới>`,
+        { reply_markup: buildMainKeyboard() }
+      );
+      return;
+    }
+
+    // Update in sheet + in memory
+    const resUpsert = await upsertBaiMaxToConfig(bai, max);
+    MAX_DAY[bai] = max;
+
+    await send(
+      chatId,
+      `✅ ${resUpsert.action === "ADDED" ? "Đã thêm" : "Đã cập nhật"} bãi ${bai}: ${max} dây.\nBây giờ bạn có thể nhập lệnh như: ${bai} 60b 220k`,
+      { reply_markup: buildMainKeyboard() }
+    );
     return;
   }
 
@@ -1006,7 +1182,12 @@ app.post("/webhook", async (req, res) => {
 
 /* ================== START ================== */
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("✅ KIM BOT READY on", PORT, "|", VERSION));
+
+// ✅ Load CONFIG bãi trước khi nhận webhook
+(async () => {
+  await loadBaiConfigFromSheet();
+  app.listen(PORT, () => console.log("✅ KIM BOT READY on", PORT, "|", VERSION));
+})();
 
 /**
  * ============================================================
