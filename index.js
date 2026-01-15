@@ -89,6 +89,39 @@ let MAX_DAY = { ...DEFAULT_MAX_DAY };
 // Google Sheet tab để lưu cấu hình bãi
 const CONFIG_SHEET_NAME = "CONFIG";
 
+
+async function ensureConfigSheetExists() {
+  try {
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      fields: "sheets.properties.title",
+    });
+
+    const titles = (meta.data.sheets || []).map((s) => s.properties?.title).filter(Boolean);
+    if (titles.includes(CONFIG_SHEET_NAME)) return;
+
+    // Tạo tab CONFIG nếu chưa có
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: CONFIG_SHEET_NAME } } }],
+      },
+    });
+
+    // Ghi header
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${CONFIG_SHEET_NAME}!A1:B1`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [["BAI", "MAX_DAY"]] },
+    });
+
+    console.log("✅ Created sheet CONFIG");
+  } catch (e) {
+    console.log("⚠️ ensureConfigSheetExists error:", e?.message || e);
+  }
+}
+
 /* ================== BASIC ROUTES ================== */
 app.get("/", (_, res) => res.send("KIM BOT OK"));
 app.get("/ping", (_, res) => res.json({ ok: true, version: VERSION }));
@@ -144,12 +177,19 @@ async function clearAllData() {
 
 /* ================== GOOGLE SHEETS: CONFIG (BÃI / MAX DÂY) ================== */
 async function getConfigRows() {
+  await ensureConfigSheetExists();
+
   // CONFIG!A2:B  => [[bai, max], ...]
-  const r = await sheets.spreadsheets.values.get({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range: `${CONFIG_SHEET_NAME}!A2:B`,
-  });
-  return r.data.values || [];
+  try {
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${CONFIG_SHEET_NAME}!A2:B`,
+    });
+    return r.data.values || [];
+  } catch (e) {
+    console.log("ℹ️ getConfigRows fallback:", e?.message || e);
+    return [];
+  }
 }
 
 async function appendConfigRow(bai, max) {
@@ -177,6 +217,7 @@ async function updateConfigRow(rowNumber1Based, bai, max) {
  * - Nếu chưa có => append dòng mới
  */
 async function upsertBaiMaxToConfig(bai, max) {
+  await ensureConfigSheetExists();
   const rows = await getConfigRows();
   const baiU = String(bai).toUpperCase();
 
@@ -920,15 +961,25 @@ async function handleTextMessage(msg) {
     }
 
     // Update in sheet + in memory
-    const resUpsert = await upsertBaiMaxToConfig(bai, max);
-    MAX_DAY[bai] = max;
+    try {
+      const resUpsert = await upsertBaiMaxToConfig(bai, max);
+      MAX_DAY[bai] = max;
 
-    await send(
-      chatId,
-      `✅ ${resUpsert.action === "ADDED" ? "Đã thêm" : "Đã cập nhật"} bãi ${bai}: ${max} dây.\nBây giờ bạn có thể nhập lệnh như: ${bai} 60b 220k`,
-      { reply_markup: buildMainKeyboard() }
-    );
-    return;
+      await send(
+        chatId,
+        `✅ ${resUpsert.action === "ADDED" ? "Đã thêm" : "Đã cập nhật"} bãi ${bai}: ${max} dây.\nBây giờ bạn có thể nhập lệnh như: ${bai} 60b 220k`,
+        { reply_markup: buildMainKeyboard() }
+      );
+      return;
+    } catch (e) {
+      console.log("❌ Upsert CONFIG error:", e?.message || e);
+      await send(
+        chatId,
+        `⚠️ Không lưu được cấu hình bãi vào Google Sheet.\nBạn kiểm tra giúp mình: Google Sheet có tab "${CONFIG_SHEET_NAME}" chưa (đúng tên).\nChi tiết lỗi: ${e?.message || e}`,
+        { reply_markup: buildMainKeyboard() }
+      );
+      return;
+    }
   }
 
   // ====== SỬA: "sua <...>" ======
