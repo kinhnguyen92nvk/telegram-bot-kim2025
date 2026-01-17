@@ -330,6 +330,119 @@ function moneyToTrieu(won) {
 }
 
 /* ================== PARSE INPUT ================== */
+
+function parseMultiWorkLine(text) {
+  const raw = (text || "").trim();
+  if (!raw) return null;
+
+  const parts = raw.split(/\s+/);
+  if (parts.length < 4) return null;
+
+  const idxB = parts.findIndex((p) => /^\d+b$/i.test(p));
+  const idxK = parts.findIndex((p) => /^\d+k$/i.test(p));
+  if (idxB === -1 || idxK === -1) return null;
+
+  const b = Number(parts[idxB].slice(0, -1));
+  const k = Number(parts[idxK].slice(0, -1));
+  if (!Number.isFinite(b) || b <= 0 || !Number.isFinite(k) || k <= 0) return null;
+
+  // day: allow "15d" or "15" (prefer token right after k)
+  let dayInMonth = null;
+  let idxDay = -1;
+
+  for (let i = 0; i < parts.length; i++) {
+    if (/^\d+d$/i.test(parts[i])) {
+      dayInMonth = Number(parts[i].slice(0, -1));
+      idxDay = i;
+      break;
+    }
+  }
+  if (dayInMonth == null) {
+    const afterK = idxK + 1;
+    if (afterK < parts.length && /^\d+$/.test(parts[afterK])) {
+      const cand = Number(parts[afterK]);
+      if (Number.isFinite(cand) && cand >= 1 && cand <= 31) {
+        dayInMonth = cand;
+        idxDay = afterK;
+      }
+    }
+  }
+
+  // collect bais (must be >=2)
+  const bais = [];
+  const baiSet = new Set();
+  for (const p of parts) {
+    const u = String(p || "").toUpperCase();
+    if (MAX_DAY[u]) {
+      if (!baiSet.has(u)) {
+        bais.push(u);
+        baiSet.add(u);
+      }
+    }
+  }
+  if (bais.length < 2) return null;
+
+  // detect per-bai g pattern in the segment before b-token:
+  const preEnd = idxB >= 0 ? idxB : parts.length;
+  const pre = parts.slice(0, preEnd);
+
+  const isBaiToken = (t) => MAX_DAY[String(t || "").toUpperCase()];
+  const isGToken = (t) => /^\d+g$/i.test(String(t || ""));
+
+  let perBaiMode = false;
+  for (let i = 0; i + 2 < pre.length; i++) {
+    if (isBaiToken(pre[i]) && isGToken(pre[i + 1]) && isBaiToken(pre[i + 2])) {
+      perBaiMode = true;
+      break;
+    }
+  }
+
+  let sharedG = null;
+  const gByBai = {};
+
+  if (perBaiMode) {
+    for (let i = 0; i < pre.length; i++) {
+      if (isBaiToken(pre[i]) && isGToken(pre[i + 1])) {
+        const bai = String(pre[i]).toUpperCase();
+        const g = Number(String(pre[i + 1]).slice(0, -1));
+        if (MAX_DAY[bai] && Number.isFinite(g) && g > 0) gByBai[bai] = g;
+      }
+    }
+  } else {
+    const gTok = pre.find((t) => isGToken(t));
+    if (gTok) {
+      const g = Number(String(gTok).slice(0, -1));
+      if (Number.isFinite(g) && g > 0) sharedG = g;
+    }
+  }
+
+  // note: tokens not recognized as bai/g/b/k/day -> join
+  const noteTokens = [];
+  for (let i = 0; i < parts.length; i++) {
+    const t = parts[i];
+    const u = String(t || "").toUpperCase();
+
+    if (MAX_DAY[u]) continue;
+    if (/^\d+g$/i.test(t)) continue;
+    if (i === idxB) continue;
+    if (i === idxK) continue;
+    if (i === idxDay) continue;
+
+    noteTokens.push(t);
+  }
+  const note = noteTokens.join(" ").trim();
+
+  return bais.map((bai) => ({
+    type: "WORK",
+    bai,
+    gDelta: (gByBai[bai] != null ? gByBai[bai] : sharedG),
+    b,
+    k,
+    dayInMonth: dayInMonth != null ? dayInMonth : null,
+    note,
+  }));
+}
+
 function parseWorkLine(text) {
   const raw = (text || "").trim();
   if (!raw) return null;
@@ -839,6 +952,74 @@ async function reportCommandList(chatId) {
 }
 
 /* ================== MAIN HANDLER ================== */
+
+async function processWorkEntry(parsed, chatId, userName) {
+const nowKST = kst();
+const workDate = parsed.dayInMonth
+  ? new Date(nowKST.getFullYear(), nowKST.getMonth(), parsed.dayInMonth)
+  : new Date(nowKST.getTime() - 86400000);
+
+const dateYmd = ymd(workDate);
+
+const rows = await getRows();
+const objs = rows.map(rowToObj);
+
+const { max, newProgress, tinhHinh, vong } = buildWorkProgress({
+  allObjs: objs,
+  bai: parsed.bai,
+  gDelta: parsed.gDelta,
+});
+
+const bc = baoChuan(parsed.b);
+const won = bc * parsed.k * 1000;
+
+const totalBefore = objs.reduce((s, o) => s + (o.won || 0), 0);
+const totalToNow = totalBefore + won;
+
+// forecast:
+// - nếu lần này sạch => forecast = dateYmd + interval
+// - nếu cắt dỡ => forecast dựa lastCleanDate (nếu có)
+const stBefore = computeBaiState(objs, parsed.bai);
+const forecast =
+  tinhHinh === "Cắt sạch"
+    ? addDaysYmd(dateYmd, CUT_INTERVAL_DAYS)
+    : (stBefore.lastCleanDate ? addDaysYmd(stBefore.lastCleanDate, CUT_INTERVAL_DAYS) : "");
+
+// append row
+await appendRow([
+  new Date().toISOString(), // A
+  dateYmd,                  // B
+  userName,                 // C
+  parsed.bai,               // D
+  newProgress,              // E (progress)
+  max,                      // F
+  tinhHinh,                 // G
+  parsed.b,                 // H
+  bc,                       // I
+  parsed.k,                 // J
+  won,                      // K
+  parsed.note || "",        // L
+]);
+
+// output
+await sendSoKim({
+  chatId,
+  userName,
+  vong,
+  dateYmd,
+  bai: parsed.bai,
+  progressG: newProgress,
+  maxG: max,
+  tinhHinh,
+  baoTau: parsed.b,
+  baoChuanX: bc,
+  giaK: parsed.k,
+  won,
+  totalToNow,
+  forecast,
+});
+}
+
 async function handleTextMessage(msg) {
   const chatId = msg.chat?.id;
   if (!chatId) return;
@@ -1097,6 +1278,20 @@ async function handleTextMessage(msg) {
     return;
   }
 
+  // ====== MULTI WORK (NHIỀU BÃI / 1 DÒNG) ======
+  // Format hỗ trợ:
+  // 1) A27 A22 50b 320k 15 <note...>
+  // 2) A27 A22 30g 50b 310k 15d <note...>
+  // 3) A27 30g A22 30g 100b 320k <note...>
+  const multi = parseMultiWorkLine(textRaw);
+  if (multi && Array.isArray(multi) && multi.length) {
+    for (const one of multi) {
+      await processWorkEntry(one, chatId, userName);
+    }
+    return;
+  }
+
+
   // ====== NO_WORK ======
   const parsed = parseWorkLine(textRaw);
 
@@ -1128,70 +1323,8 @@ async function handleTextMessage(msg) {
   }
 
   // ====== WORK ======
-  const nowKST = kst();
-  const workDate = parsed.dayInMonth
-    ? new Date(nowKST.getFullYear(), nowKST.getMonth(), parsed.dayInMonth)
-    : new Date(nowKST.getTime() - 86400000);
-
-  const dateYmd = ymd(workDate);
-
-  const rows = await getRows();
-  const objs = rows.map(rowToObj);
-
-  const { max, newProgress, tinhHinh, vong } = buildWorkProgress({
-    allObjs: objs,
-    bai: parsed.bai,
-    gDelta: parsed.gDelta,
-  });
-
-  const bc = baoChuan(parsed.b);
-  const won = bc * parsed.k * 1000;
-
-  const totalBefore = objs.reduce((s, o) => s + (o.won || 0), 0);
-  const totalToNow = totalBefore + won;
-
-  // forecast:
-  // - nếu lần này sạch => forecast = dateYmd + interval
-  // - nếu cắt dỡ => forecast dựa lastCleanDate (nếu có)
-  const stBefore = computeBaiState(objs, parsed.bai);
-  const forecast =
-    tinhHinh === "Cắt sạch"
-      ? addDaysYmd(dateYmd, CUT_INTERVAL_DAYS)
-      : (stBefore.lastCleanDate ? addDaysYmd(stBefore.lastCleanDate, CUT_INTERVAL_DAYS) : "");
-
-  // append row
-  await appendRow([
-    new Date().toISOString(), // A
-    dateYmd,                  // B
-    userName,                 // C
-    parsed.bai,               // D
-    newProgress,              // E (progress)
-    max,                      // F
-    tinhHinh,                 // G
-    parsed.b,                 // H
-    bc,                       // I
-    parsed.k,                 // J
-    won,                      // K
-    parsed.note || "",        // L
-  ]);
-
-  // output
-  await sendSoKim({
-    chatId,
-    userName,
-    vong,
-    dateYmd,
-    bai: parsed.bai,
-    progressG: newProgress,
-    maxG: max,
-    tinhHinh,
-    baoTau: parsed.b,
-    baoChuanX: bc,
-    giaK: parsed.k,
-    won,
-    totalToNow,
-    forecast,
-  });
+  await processWorkEntry(parsed, chatId, userName);
+  return;
 }
 
 /* ================== CALLBACK (optional) ==================
