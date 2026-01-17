@@ -333,6 +333,7 @@ function moneyToTrieu(won) {
 /* ================== PARSE INPUT ================== */
 
 
+
 function parseMultiWorkLine(text) {
   const raw = (text || "").trim();
   if (!raw) return null;
@@ -345,9 +346,9 @@ function parseMultiWorkLine(text) {
   const idxK = parts.findIndex((p) => /^\d+k$/i.test(p));
   if (idxB === -1 || idxK === -1) return null;
 
-  const b = Number(parts[idxB].slice(0, -1));
+  const totalB = Number(parts[idxB].slice(0, -1));
   const k = Number(parts[idxK].slice(0, -1));
-  if (!Number.isFinite(b) || b <= 0 || !Number.isFinite(k) || k <= 0) return null;
+  if (!Number.isFinite(totalB) || totalB <= 0 || !Number.isFinite(k) || k <= 0) return null;
 
   // day: allow "15d" or "15" (prefer token right after k)
   let dayInMonth = null;
@@ -383,10 +384,7 @@ function parseMultiWorkLine(text) {
   }
   if (bais.length < 2) return null;
 
-  // ✅ QUY TẮC MỚI: "g" chỉ áp dụng cho bãi ₩ứng TRƯỚC nó.
-  // Example:
-  // - "A27 A22 30g 70b 310k" => A27: (no g) ; A22: 30g
-  // - "A27 30g A22 30g 70b 310k" => A27:30g ; A22:30g
+  // ✅ QUY TẮC: "g" chỉ áp dụng cho bãi đứng TRƯỚC nó.
   const gByBai = {};
   let lastBai = null;
   for (let i = 0; i < parts.length; i++) {
@@ -418,16 +416,29 @@ function parseMultiWorkLine(text) {
   }
   const note = noteTokens.join(" ").trim();
 
-  return bais.map((bai) => ({
-    type: "WORK",
-    bai,
-    gDelta: (gByBai[bai] != null ? gByBai[bai] : null),
-    b,
-    k,
-    dayInMonth: dayInMonth != null ? dayInMonth : null,
-    note,
-  }));
+  // ✅ NEW: totalB là tổng bao của cả lệnh => chia đều cho các bãi
+  const n = bais.length;
+  const base = Math.floor(totalB / n);
+  let rem = totalB - base * n;
+
+  return bais.map((bai) => {
+    const bShare = base + (rem > 0 ? 1 : 0);
+    if (rem > 0) rem -= 1;
+
+    return {
+      type: "WORK",
+      bai,
+      gDelta: (gByBai[bai] != null ? gByBai[bai] : null),
+      b: bShare,
+      k,
+      dayInMonth: dayInMonth != null ? dayInMonth : null,
+      note,
+      _metaTotalB: totalB, // dùng cho summary
+    };
+  });
 }
+
+
 
 
 function parseTiepMultiLine(text) {
@@ -446,9 +457,9 @@ function parseTiepMultiLine(text) {
   const idxK = parts.findIndex((p) => /^\d+k$/i.test(p));
   if (idxB === -1 || idxK === -1) return null;
 
-  const b = Number(parts[idxB].slice(0, -1));
+  const totalB = Number(parts[idxB].slice(0, -1));
   const k = Number(parts[idxK].slice(0, -1));
-  if (!Number.isFinite(b) || b <= 0 || !Number.isFinite(k) || k <= 0) return null;
+  if (!Number.isFinite(totalB) || totalB <= 0 || !Number.isFinite(k) || k <= 0) return null;
 
   let dayInMonth = null;
   let idxDay = -1;
@@ -494,15 +505,26 @@ function parseTiepMultiLine(text) {
   }
   const note = noteTokens.join(" ").trim();
 
-  return bais.map((bai) => ({
-    type: "TIEP",
-    bai,
-    b,
-    k,
-    dayInMonth: dayInMonth != null ? dayInMonth : null,
-    note,
-  }));
+  const n = bais.length;
+  const base = Math.floor(totalB / n);
+  let rem = totalB - base * n;
+
+  return bais.map((bai) => {
+    const bShare = base + (rem > 0 ? 1 : 0);
+    if (rem > 0) rem -= 1;
+
+    return {
+      type: "TIEP",
+      bai,
+      b: bShare,
+      k,
+      dayInMonth: dayInMonth != null ? dayInMonth : null,
+      note,
+      _metaTotalB: totalB,
+    };
+  });
 }
+
 
 function parseWorkLine(text) {
   const raw = (text || "").trim();
@@ -1397,6 +1419,7 @@ async function handleTextMessage(msg) {
     // thu thập summary cho multi
     let sumWon = 0;
     let sumBao = 0;
+    let totalBaoInput = null;
     let usedDate = null;
     let usedK = null;
     const usedBais = [];
@@ -1449,13 +1472,14 @@ async function handleTextMessage(msg) {
       await processWorkEntry(one, chatId, userName);
       sumWon += Number(one.k || 0) * 1000 * Number(one.b || 0);
       sumBao += Number(one.b || 0);
+      if (totalBaoInput == null && one._metaTotalB) totalBaoInput = Number(one._metaTotalB);
       usedDate = one.dayInMonth ? one.dayInMonth : null;
       usedK = one.k;
       if (!usedBais.includes(one.bai)) usedBais.push(one.bai);
     }
     const now = kst();
     const d = usedDate ? new Date(now.getFullYear(), now.getMonth(), usedDate) : new Date(now.getTime() - 86400000);
-    await sendMultiSummary({ chatId, userName, dateYmd: ymd(d), bais: usedBais, totalWon: sumWon, k: usedK, totalBao: sumBao });
+    await sendMultiSummary({ chatId, userName, dateYmd: ymd(d), bais: usedBais, totalWon: sumWon, k: usedK, totalBao: (totalBaoInput != null ? totalBaoInput : sumBao) });
     return;
   }
 
