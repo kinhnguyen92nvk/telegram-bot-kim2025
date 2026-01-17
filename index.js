@@ -6,14 +6,14 @@
  * ✅ FINAL REQUIREMENTS (CHỐT):
  * 1) Reply keyboard "menu box" Telegram: luôn hiện, bấm là chạy.
  * 2) Parsing:
- *    - token đầu: Bãi (A27/A14/34/...)
+ *    - token ₩ầu: Bãi (A27/A14/34/...)
  *    - ...b bắt buộc, ...k bắt buộc
  *    - ...g optional:
  *        + nếu thiếu => CẮT SẠCH (progress = max)
  *        + nếu có => CẮT DỠ theo số g (delta) và CỘNG DỒN progress
- *        + nếu progress đạt max => tự thành CẮT SẠCH
+ *        + nếu progress ₩ạt max => tự thành CẮT SẠCH
  *    - ...d optional: ngày trong tháng (dd) => ghi bù ngày dd/tháng hiện tại
- *      nếu thiếu => mặc định HÔM QUA
+ *      nếu thiếu => mặc ₩ịnh HÔM QUA
  *    - "note:" optional => ghi cột Note
  *    - "nghỉ gió" / "làm bờ" => ghi tình hình, doanh thu = 0
  *
@@ -24,8 +24,8 @@
  *
  * 4) Output:
  *    --- 🌊 SỔ KIM (Vòng: X) ---
- *    Chào <Tên>, đây là kết quả của lệnh bạn gửi
- *    ... (đúng format)
+ *    Chào <Tên>, ₩ây là kết quả của lệnh bạn gửi
+ *    ... (₩úng format)
  *
  * 5) Delete:
  *    - Không cần admin
@@ -65,12 +65,12 @@ const CONFIRM_CODE = "2525"; // ✅ chốt mã xóa
 
 /* ================== CONFIG (MAX DÂY CHỐT) ================== */
 /**
- * ✅ NÂNG CẤP: MAX_DAY giờ có thể thay đổi động (thêm bãi / sửa số dây)
- * - Mặc định: DEFAULT_MAX_DAY (hard-code)
+ * ✅ NÂNG CẤP: MAX_DAY giờ có thể thay ₩ổi ₩ộng (thêm bãi / sửa số dây)
+ * - Mặc ₩ịnh: DEFAULT_MAX_DAY (hard-code)
  * - Runtime: load thêm từ Google Sheet tab "CONFIG" (A:B)
  *   + A: Bãi (ví dụ A27)
  *   + B: Max dây (ví dụ 60)
- * - Khi thêm/sửa: bot sẽ lưu vào tab CONFIG để lần sau vẫn còn.
+ * - Khi thêm/sửa: bot sẽ lưu vào tab CONFIG ₩ể lần sau vẫn còn.
  */
 const DEFAULT_MAX_DAY = {
   A14: 69,
@@ -86,7 +86,7 @@ const DEFAULT_MAX_DAY = {
 // MAX_DAY dùng trong toàn bộ logic (parse / forecast / thống kê...)
 let MAX_DAY = { ...DEFAULT_MAX_DAY };
 
-// Google Sheet tab để lưu cấu hình bãi
+// Google Sheet tab ₩ể lưu cấu hình bãi
 const CONFIG_SHEET_NAME = "CONFIG";
 
 
@@ -213,7 +213,7 @@ async function updateConfigRow(rowNumber1Based, bai, max) {
 
 /**
  * Upsert cấu hình bãi:
- * - Nếu đã có bãi trong CONFIG => update dòng đó
+ * - Nếu ₩ã có bãi trong CONFIG => update dòng ₩ó
  * - Nếu chưa có => append dòng mới
  */
 async function upsertBaiMaxToConfig(bai, max) {
@@ -253,7 +253,7 @@ async function loadBaiConfigFromSheet() {
 
     console.log("✅ Loaded CONFIG bãi:", Object.keys(map).length, "items");
   } catch (e) {
-    console.log("ℹ️ Không load được CONFIG (có thể chưa tạo tab CONFIG):", e?.message || e);
+    console.log("ℹ️ Không load ₩ược CONFIG (có thể chưa tạo tab CONFIG):", e?.message || e);
     MAX_DAY = { ...DEFAULT_MAX_DAY };
   }
 }
@@ -281,7 +281,7 @@ function buildMainKeyboard() {
     keyboard: [
       [{ text: "📅 Thống kê tháng này" }, { text: "🔁 Thống kê theo VÒNG" }],
       [{ text: "📍 Thống kê theo BÃI" }, { text: "📆 Lịch cắt các bãi" }],
-      [{ text: "📋 Danh sách lệnh đã gửi" }],
+      [{ text: "📋 Danh sách lệnh ₩ã gửi" }],
       [{ text: "💰 TỔNG THU NHẬP" }],
       [{ text: "➕ Thêm bãi" }, { text: "🧷 Sửa số dây bãi" }],
       [{ text: "✏️ Sửa dòng gần nhất" }, { text: "🗑️ Xóa dòng gần nhất" }],
@@ -293,9 +293,9 @@ function buildMainKeyboard() {
   };
 }
 
-/** Gắn keyboard cho chat (gọi mỗi lần bot trả lời cũng được) */
+/** Gắn keyboard cho chat (gọi mỗi lần bot trả lời cũng ₩ược) */
 async function ensureKeyboard(chatId) {
-  await send(chatId, "✅ Menu đã sẵn sàng.", {
+  await send(chatId, "✅ Menu ₩ã sẵn sàng.", {
     reply_markup: buildMainKeyboard(),
   });
 }
@@ -321,7 +321,7 @@ function fmtDayVN(d) {
 }
 
 function ymd(d) {
-  // d đã là KST date
+  // d ₩ã là KST date
   return d.toISOString().slice(0, 10);
 }
 
@@ -383,7 +383,7 @@ function parseMultiWorkLine(text) {
   }
   if (bais.length < 2) return null;
 
-  // ✅ QUY TẮC MỚI: "g" chỉ áp dụng cho bãi đứng TRƯỚC nó.
+  // ✅ QUY TẮC MỚI: "g" chỉ áp dụng cho bãi ₩ứng TRƯỚC nó.
   // Example:
   // - "A27 A22 30g 70b 310k" => A27: (no g) ; A22: 30g
   // - "A27 30g A22 30g 70b 310k" => A27:30g ; A22:30g
@@ -557,16 +557,16 @@ function computeLastPartialDelta(allObjs, bai) {
   const last = rows[rows.length - 1];
   const lastProgress = Number(last.progress || 0);
 
-  if (lastProgress >= max) return null; // đã sạch, không thể "tiep"
+  if (lastProgress >= max) return null; // ₩ã sạch, không thể "tiep"
 
-  // tìm progress trước đó để tính delta
+  // tìm progress trước ₩ó ₩ể tính delta
   const prev = rows.length >= 2 ? rows[rows.length - 2] : null;
   const prevProgress = prev ? Number(prev.progress || 0) : 0;
 
   const delta = Math.max(0, lastProgress - prevProgress);
   if (delta > 0) return delta;
 
-  // fallback: nếu không tính được, dùng lastProgress (giả sử bắt đầu từ 0)
+  // fallback: nếu không tính ₩ược, dùng lastProgress (giả sử bắt ₩ầu từ 0)
   return lastProgress > 0 ? lastProgress : null;
 }
 
@@ -622,8 +622,8 @@ function isCleanRow(o) {
 
 /**
  * Lấy trạng thái bãi:
- * - cleanDone: số lần cắt sạch đã hoàn thành
- * - progress: tiến độ hiện tại trong vòng (0..max)
+ * - cleanDone: số lần cắt sạch ₩ã hoàn thành
+ * - progress: tiến ₩ộ hiện tại trong vòng (0..max)
  * - lastCleanDate: ngày cắt sạch gần nhất
  */
 function computeBaiState(allObjs, bai) {
@@ -638,13 +638,13 @@ function computeBaiState(allObjs, bai) {
     // chỉ tính dòng work của bãi
     if (!isWorkRow(o)) continue;
 
-    // nếu clean => đóng vòng, reset progress
+    // nếu clean => ₩óng vòng, reset progress
     if (Number(o.dayG) >= max && max > 0) {
       cleanDone += 1;
       progress = 0; // reset sau khi sạch
       lastCleanDate = o.date || lastCleanDate;
     } else {
-      // cắt dỡ: progress là tiến độ đã lưu ở cột dayG
+      // cắt dỡ: progress là tiến ₩ộ ₩ã lưu ở cột dayG
       progress = Math.min(Number(o.dayG || 0), max);
     }
   }
@@ -768,7 +768,7 @@ async function sendSoKim({
 
   const text =
 `--- 🌊 SỔ KIM (Vòng: ${vong}) ---
-Chào ${userName}, đây là kết quả của lệnh bạn gửi
+Chào ${userName}, ₩ây là kết quả của lệnh bạn gửi
 
 📅 Ngày: ${fmtDayVN(dateObj)}
 📍 Vị trí: ${bai}
@@ -898,7 +898,7 @@ async function reportByBai(chatId) {
 /**
  * ✅ THỐNG KÊ THEO VÒNG:
  * - Vòng của mỗi dòng = cleanDoneBefore + 1
- * - Cộng tiền theo Vòng, bao gồm cả "cắt dỡ" (đúng chốt mới)
+ * - Cộng tiền theo Vòng, bao gồm cả "cắt dỡ" (₩úng chốt mới)
  */
 async function reportByVong(chatId) {
   const rows = await getRows();
@@ -987,7 +987,7 @@ function buildWorkProgress({ allObjs, bai, gDelta }) {
   const max = MAX_DAY[bai];
   const st = computeBaiState(allObjs, bai);
 
-  // st.progress là progress hiện tại (nếu đang cắt dỡ), hoặc 0 nếu vừa sạch
+  // st.progress là progress hiện tại (nếu ₩ang cắt dỡ), hoặc 0 nếu vừa sạch
   let newProgress;
   let tinhHinh;
 
@@ -1000,8 +1000,8 @@ function buildWorkProgress({ allObjs, bai, gDelta }) {
   }
 
   const vong = st.currentVong; // vòng hiện tại (cleanDone+1)
-  // nếu lần này clean thì vẫn hiển thị vòng hiện tại (đúng yêu cầu)
-  // sau đó vòng sẽ tăng cho lần tiếp theo.
+  // nếu lần này clean thì vẫn hiển thị vòng hiện tại (₩úng yêu cầu)
+  // sau ₩ó vòng sẽ tăng cho lần tiếp theo.
 
   return { max, newProgress, tinhHinh, vong };
 }
@@ -1035,6 +1035,27 @@ async function reportCommandList(chatId) {
 }
 
 /* ================== MAIN HANDLER ================== */
+
+
+async function sendMultiSummary({ chatId, userName, dateYmd, bais, totalWon, k, totalBao }) {
+  const day = dateYmd;
+  const fmtWon = Number(totalWon || 0).toLocaleString("vi-VN");
+  const fmtBao = Number(totalBao || 0).toLocaleString("vi-VN");
+
+  const text = [
+    "Chào Dòng Đời, đây là kết quả của lệnh bạn gửi cho các bãi:",
+    "",
+    `📅 Ngày: ${day}`,
+    `📍 Vị trí: ${bais.join(" ")}`,
+    "✂️ Tình hình: Cắt",
+    `📦 Sản lượng: ${fmtBao} bao`,
+    `💰 Giá: ${k}k`,
+    "",
+    `💵 THU HÔM NAY: ${fmtWon}₩`,
+  ].join("\n");
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
+}
 
 async function processWorkEntry(parsed, chatId, userName) {
 const nowKST = kst();
@@ -1110,11 +1131,11 @@ async function handleTextMessage(msg) {
   const userName = msg.from?.first_name || "Bạn";
   const textRaw = (msg.text || "").trim();
 
-  // Nếu user nhập mã 2525 để xác nhận xóa
+  // Nếu user nhập mã 2525 ₩ể xác nhận xóa
   if (textRaw === CONFIRM_CODE) {
     const p = getPending(chatId);
     if (!p) {
-      await send(chatId, "⚠️ Không có yêu cầu xoá nào đang chờ xác nhận.", {
+      await send(chatId, "⚠️ Không có yêu cầu xoá nào ₩ang chờ xác nhận.", {
         reply_markup: buildMainKeyboard(),
       });
       return;
@@ -1123,7 +1144,7 @@ async function handleTextMessage(msg) {
     if (p.action === "RESET") {
       await clearAllData();
       clearPending(chatId);
-      await send(chatId, "✅ Đã XOÁ SẠCH DATA (giữ header). Bạn có thể làm lại từ đầu.", {
+      await send(chatId, "✅ Đã XOÁ SẠCH DATA (giữ header). Bạn có thể làm lại từ ₩ầu.", {
         reply_markup: buildMainKeyboard(),
       });
       return;
@@ -1134,7 +1155,7 @@ async function handleTextMessage(msg) {
       const idx = findLastRowIndexAny(rows);
       if (!idx) {
         clearPending(chatId);
-        await send(chatId, "Không có dữ liệu để xoá.", { reply_markup: buildMainKeyboard() });
+        await send(chatId, "Không có dữ liệu ₩ể xoá.", { reply_markup: buildMainKeyboard() });
         return;
       }
       await clearRow(idx);
@@ -1153,7 +1174,7 @@ async function handleTextMessage(msg) {
 
   // ====== MENU BUTTONS (Reply keyboard texts) ======
   if (textRaw === "/start") {
-    await send(chatId, "✅ Sổ Kim đã sẵn sàng. Bạn cứ nhập lệnh theo cú pháp.", {
+    await send(chatId, "✅ Sổ Kim ₩ã sẵn sàng. Bạn cứ nhập lệnh theo cú pháp.", {
       reply_markup: buildMainKeyboard(),
     });
     return;
@@ -1163,7 +1184,7 @@ async function handleTextMessage(msg) {
   if (textRaw === "🔁 Thống kê theo VÒNG") return reportByVong(chatId);
   if (textRaw === "📍 Thống kê theo BÃI") return reportByBai(chatId);
   if (textRaw === "📆 Lịch cắt các bãi") return reportCutSchedule(chatId);
-  if (textRaw === "📋 Danh sách lệnh đã gửi") return reportCommandList(chatId);
+  if (textRaw === "📋 Danh sách lệnh ₩ã gửi") return reportCommandList(chatId);
 
   if (textRaw === "💰 TỔNG THU NHẬP") {
     const rows = await getRows();
@@ -1172,14 +1193,14 @@ async function handleTextMessage(msg) {
     const total = objs.reduce((s, o) => s + (Number(o.won) || 0), 0);
     const fmt = total.toLocaleString("vi-VN");
 
-    await send(chatId, `💰 TỔNG THU NHẬP: ${fmt}đ`, { reply_markup: buildMainKeyboard() });
+    await send(chatId, `💰 TỔNG THU NHẬP: ${fmt}₩`, { reply_markup: buildMainKeyboard() });
     return;
   }
 
   if (textRaw === "➕ Thêm bãi") {
     await send(
       chatId,
-      `➕ THÊM BÃI MỚI\nBạn gõ theo mẫu:\n• them bai <Bãi> <SốDây>\nVí dụ:\n• them bai A99 70\n\nSau khi thêm, bãi sẽ dùng được như các bãi khác (thống kê, lịch cắt, nhập lệnh...).`,
+      `➕ THÊM BÃI MỚI\nBạn gõ theo mẫu:\n• them bai <Bãi> <SốDây>\nVí dụ:\n• them bai A99 70\n\nSau khi thêm, bãi sẽ dùng ₩ược như các bãi khác (thống kê, lịch cắt, nhập lệnh...).`,
       { reply_markup: buildMainKeyboard() }
     );
     return;
@@ -1225,11 +1246,11 @@ async function handleTextMessage(msg) {
   if (baiMaxCmd) {
     const { action, bai, max } = baiMaxCmd;
 
-    // ADD: không cho ghi đè (để tránh thay đổi nhầm). Muốn đổi thì dùng "sua day".
+    // ADD: không cho ghi ₩è (₩ể tránh thay ₩ổi nhầm). Muốn ₩ổi thì dùng "sua day".
     if (action === "ADD" && MAX_DAY[bai]) {
       await send(
         chatId,
-        `⚠️ Bãi ${bai} đã tồn tại (${MAX_DAY[bai]} dây).\nNếu bạn muốn đổi số dây, hãy dùng: sua day ${bai} <SốDâyMới>`,
+        `⚠️ Bãi ${bai} ₩ã tồn tại (${MAX_DAY[bai]} dây).\nNếu bạn muốn ₩ổi số dây, hãy dùng: sua day ${bai} <SốDâyMới>`,
         { reply_markup: buildMainKeyboard() }
       );
       return;
@@ -1250,7 +1271,7 @@ async function handleTextMessage(msg) {
       console.log("❌ Upsert CONFIG error:", e?.message || e);
       await send(
         chatId,
-        `⚠️ Không lưu được cấu hình bãi vào Google Sheet.\nBạn kiểm tra giúp mình: Google Sheet có tab "${CONFIG_SHEET_NAME}" chưa (đúng tên).\nChi tiết lỗi: ${e?.message || e}`,
+        `⚠️ Không lưu ₩ược cấu hình bãi vào Google Sheet.\nBạn kiểm tra giúp mình: Google Sheet có tab "${CONFIG_SHEET_NAME}" chưa (₩úng tên).\nChi tiết lỗi: ${e?.message || e}`,
         { reply_markup: buildMainKeyboard() }
       );
       return;
@@ -1271,17 +1292,17 @@ async function handleTextMessage(msg) {
     const idx = findLastWorkRowIndexForUserAndBai(rows, userName, parsed.bai);
 
     if (!idx) {
-      await send(chatId, "❌ Không tìm thấy dòng gần nhất để sửa cho bãi này.", {
+      await send(chatId, "❌ Không tìm thấy dòng gần nhất ₩ể sửa cho bãi này.", {
         reply_markup: buildMainKeyboard(),
       });
       return;
     }
 
-    // Lấy toàn bộ objs để tính lại progress/vòng cho dòng sửa
+    // Lấy toàn bộ objs ₩ể tính lại progress/vòng cho dòng sửa
     const objs = rows.map(rowToObj);
 
-    // Vì sửa dòng gần nhất của bãi, lấy "state trước dòng đó":
-    // Cách đơn giản: tạm thời bỏ dòng cũ ra khỏi list rồi tính state.
+    // Vì sửa dòng gần nhất của bãi, lấy "state trước dòng ₩ó":
+    // Cách ₩ơn giản: tạm thời bỏ dòng cũ ra khỏi list rồi tính state.
     const rowIndex0 = idx - 2;
     const oldObj = rowToObj(rows[rowIndex0]);
 
@@ -1297,14 +1318,14 @@ async function handleTextMessage(msg) {
     const bc = baoChuan(parsed.b);
     const won = bc * parsed.k * 1000;
 
-    // tính progress & vòng theo dữ liệu đã loại dòng cũ
+    // tính progress & vòng theo dữ liệu ₩ã loại dòng cũ
     const { max, newProgress, tinhHinh, vong } = buildWorkProgress({
       allObjs: objsWithoutOld,
       bai: parsed.bai,
       gDelta: parsed.gDelta,
     });
 
-    // tổng thu đến thời điểm này: cộng tất cả + dòng sửa
+    // tổng thu ₩ến thời ₩iểm này: cộng tất cả + dòng sửa
     const totalBefore = objsWithoutOld.reduce((s, o) => s + (o.won || 0), 0);
     const totalToNow = totalBefore + won;
 
@@ -1351,7 +1372,7 @@ async function handleTextMessage(msg) {
 
     await updateRow(idx, newRow);
 
-    // trả lại đúng format "SỔ KIM" luôn (kèm forecast mới)
+    // trả lại ₩úng format "SỔ KIM" luôn (kèm forecast mới)
     await sendSoKim({
       chatId,
       userName,
@@ -1373,6 +1394,14 @@ async function handleTextMessage(msg) {
   }
 
   // ====== MULTI WORK (NHIỀU BÃI / 1 DÒNG) ======
+    // thu thập summary cho multi
+    let sumWon = 0;
+    let sumBao = 0;
+    let usedDate = null;
+    let usedK = null;
+    const usedBais = [];
+
+
 
   // ====== TIEP (NHIỀU BÃI / 1 DÒNG) ======
   // Format: Tiep A27 A22 90b 320k [15|15d] [note...]
@@ -1386,7 +1415,7 @@ async function handleTextMessage(msg) {
       if (!lastDelta) {
         await send(
           chatId,
-          `⚠️ ${one.bai} đang CẮT SẠCH hoặc chưa có dữ liệu cắt dỡ để "Tiep".`,
+          `⚠️ ${one.bai} ₩ang CẮT SẠCH hoặc chưa có dữ liệu cắt dỡ ₩ể "Tiep".`,
           { reply_markup: buildMainKeyboard() }
         );
         continue;
@@ -1418,7 +1447,15 @@ async function handleTextMessage(msg) {
   if (multi && Array.isArray(multi) && multi.length) {
     for (const one of multi) {
       await processWorkEntry(one, chatId, userName);
+      sumWon += Number(one.k || 0) * 1000 * Number(one.b || 0);
+      sumBao += Number(one.b || 0);
+      usedDate = one.dayInMonth ? one.dayInMonth : null;
+      usedK = one.k;
+      if (!usedBais.includes(one.bai)) usedBais.push(one.bai);
     }
+    const now = kst();
+    const d = usedDate ? new Date(now.getFullYear(), now.getMonth(), usedDate) : new Date(now.getTime() - 86400000);
+    await sendMultiSummary({ chatId, userName, dateYmd: ymd(d), bais: usedBais, totalWon: sumWon, k: usedK, totalBao: sumBao });
     return;
   }
 
@@ -1461,7 +1498,7 @@ async function handleTextMessage(msg) {
 /* ================== CALLBACK (optional) ==================
 Hiện tại ta dùng Reply Keyboard (bấm là gửi text),
 nên callback_query không bắt buộc.
-Nhưng vẫn để answerCallbackQuery nếu sau này bạn thêm inline buttons.
+Nhưng vẫn ₩ể answerCallbackQuery nếu sau này bạn thêm inline buttons.
 =========================================================== */
 async function handleCallbackQuery(cb) {
   await tg("answerCallbackQuery", { callback_query_id: cb.id });
@@ -1501,7 +1538,7 @@ const PORT = process.env.PORT || 10000;
  * ============================================================
  * NOTES:
  * - Nếu bạn muốn menu luôn hiện ngay khi chat mở:
- *   chỉ cần /start 1 lần. Bot đã gắn keyboard vào mỗi câu trả lời.
+ *   chỉ cần /start 1 lần. Bot ₩ã gắn keyboard vào mỗi câu trả lời.
  *
  * - Cột E (DayG) bây giờ là "progress cộng dồn" theo vòng,
  *   nên bãi 34 cắt 2 lần 55g + 54g => lần 2 sẽ thành 109/109 => CẮT SẠCH.
