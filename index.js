@@ -282,6 +282,7 @@ function buildMainKeyboard() {
       [{ text: "📅 Thống kê tháng này" }, { text: "🔁 Thống kê theo VÒNG" }],
       [{ text: "📍 Thống kê theo BÃI" }, { text: "📆 Lịch cắt các bãi" }],
       [{ text: "📋 Danh sách lệnh đã gửi" }],
+      [{ text: "💰 TỔNG THU NHẬP" }],
       [{ text: "➕ Thêm bãi" }, { text: "🧷 Sửa số dây bãi" }],
       [{ text: "✏️ Sửa dòng gần nhất" }, { text: "🗑️ Xóa dòng gần nhất" }],
       [{ text: "⚠️ XÓA SẠCH DỮ LIỆU" }],
@@ -331,6 +332,7 @@ function moneyToTrieu(won) {
 
 /* ================== PARSE INPUT ================== */
 
+
 function parseMultiWorkLine(text) {
   const raw = (text || "").trim();
   if (!raw) return null;
@@ -338,6 +340,7 @@ function parseMultiWorkLine(text) {
   const parts = raw.split(/\s+/);
   if (parts.length < 4) return null;
 
+  // must contain at least one b and one k
   const idxB = parts.findIndex((p) => /^\d+b$/i.test(p));
   const idxK = parts.findIndex((p) => /^\d+k$/i.test(p));
   if (idxB === -1 || idxK === -1) return null;
@@ -368,51 +371,34 @@ function parseMultiWorkLine(text) {
     }
   }
 
-  // collect bais (must be >=2)
+  // collect bais in order, unique
   const bais = [];
   const baiSet = new Set();
   for (const p of parts) {
     const u = String(p || "").toUpperCase();
-    if (MAX_DAY[u]) {
-      if (!baiSet.has(u)) {
-        bais.push(u);
-        baiSet.add(u);
-      }
+    if (MAX_DAY[u] && !baiSet.has(u)) {
+      bais.push(u);
+      baiSet.add(u);
     }
   }
   if (bais.length < 2) return null;
 
-  // detect per-bai g pattern in the segment before b-token:
-  const preEnd = idxB >= 0 ? idxB : parts.length;
-  const pre = parts.slice(0, preEnd);
-
-  const isBaiToken = (t) => MAX_DAY[String(t || "").toUpperCase()];
-  const isGToken = (t) => /^\d+g$/i.test(String(t || ""));
-
-  let perBaiMode = false;
-  for (let i = 0; i + 2 < pre.length; i++) {
-    if (isBaiToken(pre[i]) && isGToken(pre[i + 1]) && isBaiToken(pre[i + 2])) {
-      perBaiMode = true;
-      break;
-    }
-  }
-
-  let sharedG = null;
+  // ✅ QUY TẮC MỚI: "g" chỉ áp dụng cho bãi đứng TRƯỚC nó.
+  // Example:
+  // - "A27 A22 30g 70b 310k" => A27: (no g) ; A22: 30g
+  // - "A27 30g A22 30g 70b 310k" => A27:30g ; A22:30g
   const gByBai = {};
-
-  if (perBaiMode) {
-    for (let i = 0; i < pre.length; i++) {
-      if (isBaiToken(pre[i]) && isGToken(pre[i + 1])) {
-        const bai = String(pre[i]).toUpperCase();
-        const g = Number(String(pre[i + 1]).slice(0, -1));
-        if (MAX_DAY[bai] && Number.isFinite(g) && g > 0) gByBai[bai] = g;
-      }
+  let lastBai = null;
+  for (let i = 0; i < parts.length; i++) {
+    const t = parts[i];
+    const u = String(t || "").toUpperCase();
+    if (MAX_DAY[u]) {
+      lastBai = u;
+      continue;
     }
-  } else {
-    const gTok = pre.find((t) => isGToken(t));
-    if (gTok) {
-      const g = Number(String(gTok).slice(0, -1));
-      if (Number.isFinite(g) && g > 0) sharedG = g;
+    if (/^\d+g$/i.test(t) && lastBai) {
+      const g = Number(String(t).slice(0, -1));
+      if (Number.isFinite(g) && g > 0) gByBai[lastBai] = g;
     }
   }
 
@@ -435,7 +421,82 @@ function parseMultiWorkLine(text) {
   return bais.map((bai) => ({
     type: "WORK",
     bai,
-    gDelta: (gByBai[bai] != null ? gByBai[bai] : sharedG),
+    gDelta: (gByBai[bai] != null ? gByBai[bai] : null),
+    b,
+    k,
+    dayInMonth: dayInMonth != null ? dayInMonth : null,
+    note,
+  }));
+}
+
+
+function parseTiepMultiLine(text) {
+  const raw = (text || "").trim();
+  if (!raw) return null;
+
+  // Tiep A27 A22 90b 320k [15|15d] [note...]
+  const m = raw.match(/^tiep\s+/i);
+  if (!m) return null;
+
+  const body = raw.replace(/^tiep\s+/i, "").trim();
+  const parts = body.split(/\s+/);
+  if (parts.length < 3) return null;
+
+  const idxB = parts.findIndex((p) => /^\d+b$/i.test(p));
+  const idxK = parts.findIndex((p) => /^\d+k$/i.test(p));
+  if (idxB === -1 || idxK === -1) return null;
+
+  const b = Number(parts[idxB].slice(0, -1));
+  const k = Number(parts[idxK].slice(0, -1));
+  if (!Number.isFinite(b) || b <= 0 || !Number.isFinite(k) || k <= 0) return null;
+
+  let dayInMonth = null;
+  let idxDay = -1;
+
+  for (let i = 0; i < parts.length; i++) {
+    if (/^\d+d$/i.test(parts[i])) {
+      dayInMonth = Number(parts[i].slice(0, -1));
+      idxDay = i;
+      break;
+    }
+  }
+  if (dayInMonth == null) {
+    const afterK = idxK + 1;
+    if (afterK < parts.length && /^\d+$/.test(parts[afterK])) {
+      const cand = Number(parts[afterK]);
+      if (Number.isFinite(cand) && cand >= 1 && cand <= 31) {
+        dayInMonth = cand;
+        idxDay = afterK;
+      }
+    }
+  }
+
+  const bais = [];
+  const baiSet = new Set();
+  for (const p of parts) {
+    const u = String(p || "").toUpperCase();
+    if (MAX_DAY[u] && !baiSet.has(u)) {
+      bais.push(u);
+      baiSet.add(u);
+    }
+  }
+  if (bais.length < 1) return null;
+
+  const noteTokens = [];
+  for (let i = 0; i < parts.length; i++) {
+    const t = parts[i];
+    const u = String(t || "").toUpperCase();
+    if (MAX_DAY[u]) continue;
+    if (i === idxB) continue;
+    if (i === idxK) continue;
+    if (i === idxDay) continue;
+    noteTokens.push(t);
+  }
+  const note = noteTokens.join(" ").trim();
+
+  return bais.map((bai) => ({
+    type: "TIEP",
+    bai,
     b,
     k,
     dayInMonth: dayInMonth != null ? dayInMonth : null,
@@ -485,6 +546,28 @@ function parseWorkLine(text) {
 
   // g thiếu => hiểu là CẮT SẠCH (progress = max)
   return { type: "WORK", bai, gDelta: g, b, k, dayInMonth: d, note };
+}
+
+
+function computeLastPartialDelta(allObjs, bai) {
+  const max = MAX_DAY[bai];
+  const rows = allObjs.filter((o) => o.bai === bai && o.tinhHinh && (o.tinhHinh === "Cắt sạch" || o.tinhHinh === "Cắt dỡ"));
+  if (!rows.length) return null;
+
+  const last = rows[rows.length - 1];
+  const lastProgress = Number(last.progress || 0);
+
+  if (lastProgress >= max) return null; // đã sạch, không thể "tiep"
+
+  // tìm progress trước đó để tính delta
+  const prev = rows.length >= 2 ? rows[rows.length - 2] : null;
+  const prevProgress = prev ? Number(prev.progress || 0) : 0;
+
+  const delta = Math.max(0, lastProgress - prevProgress);
+  if (delta > 0) return delta;
+
+  // fallback: nếu không tính được, dùng lastProgress (giả sử bắt đầu từ 0)
+  return lastProgress > 0 ? lastProgress : null;
 }
 
 function baoChuan(baoTau) {
@@ -1082,6 +1165,17 @@ async function handleTextMessage(msg) {
   if (textRaw === "📆 Lịch cắt các bãi") return reportCutSchedule(chatId);
   if (textRaw === "📋 Danh sách lệnh đã gửi") return reportCommandList(chatId);
 
+  if (textRaw === "💰 TỔNG THU NHẬP") {
+    const rows = await getRows();
+    const objs = rows.map(rowToObj);
+
+    const total = objs.reduce((s, o) => s + (Number(o.won) || 0), 0);
+    const fmt = total.toLocaleString("vi-VN");
+
+    await send(chatId, `💰 TỔNG THU NHẬP: ${fmt}đ`, { reply_markup: buildMainKeyboard() });
+    return;
+  }
+
   if (textRaw === "➕ Thêm bãi") {
     await send(
       chatId,
@@ -1279,6 +1373,43 @@ async function handleTextMessage(msg) {
   }
 
   // ====== MULTI WORK (NHIỀU BÃI / 1 DÒNG) ======
+
+  // ====== TIEP (NHIỀU BÃI / 1 DÒNG) ======
+  // Format: Tiep A27 A22 90b 320k [15|15d] [note...]
+  const tiep = parseTiepMultiLine(textRaw);
+  if (tiep && Array.isArray(tiep) && tiep.length) {
+    const rows = await getRows();
+    const objs = rows.map(rowToObj);
+
+    for (const one of tiep) {
+      const lastDelta = computeLastPartialDelta(objs, one.bai);
+      if (!lastDelta) {
+        await send(
+          chatId,
+          `⚠️ ${one.bai} đang CẮT SẠCH hoặc chưa có dữ liệu cắt dỡ để "Tiep".`,
+          { reply_markup: buildMainKeyboard() }
+        );
+        continue;
+      }
+
+      await processWorkEntry(
+        {
+          type: "WORK",
+          bai: one.bai,
+          gDelta: lastDelta, // auto dùng delta lần trước
+          b: one.b,
+          k: one.k,
+          dayInMonth: one.dayInMonth,
+          note: one.note ? `[Tiep] ${one.note}` : "[Tiep]",
+        },
+        chatId,
+        userName
+      );
+    }
+    return;
+  }
+
+
   // Format hỗ trợ:
   // 1) A27 A22 50b 320k 15 <note...>
   // 2) A27 A22 30g 50b 310k 15d <note...>
