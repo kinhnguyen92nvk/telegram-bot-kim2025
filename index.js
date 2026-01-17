@@ -1469,9 +1469,7 @@ async function handleTextMessage(msg) {
   const multi = parseMultiWorkLine(textRaw);
   if (multi && Array.isArray(multi) && multi.length) {
     for (const one of multi) {
-      await processWorkEntry(one, chatId, userName);
-      sumWon += Number(one.k || 0) * 1000 * Number(one.b || 0);
-      sumBao += Number(one.b || 0);
+      await processWorkEntry(one, chatId, userName);      sumBao += Number(one.b || 0);
       if (totalBaoInput == null && one._metaTotalB) totalBaoInput = Number(one._metaTotalB);
       usedDate = one.dayInMonth ? one.dayInMonth : null;
       usedK = one.k;
@@ -1479,6 +1477,7 @@ async function handleTextMessage(msg) {
     }
     const now = kst();
     const d = usedDate ? new Date(now.getFullYear(), now.getMonth(), usedDate) : new Date(now.getTime() - 86400000);
+    sumWon = baoChuan((totalBaoInput != null ? totalBaoInput : sumBao)) * Number(usedK || 0) * 1000;
     await sendMultiSummary({ chatId, userName, dateYmd: ymd(d), bais: usedBais, totalWon: sumWon, k: usedK, totalBao: (totalBaoInput != null ? totalBaoInput : sumBao) });
     return;
   }
