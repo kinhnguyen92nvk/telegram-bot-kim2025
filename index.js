@@ -54,6 +54,10 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
+// Hỗ trợ 2 cách xác thực Google:
+// 1. GOOGLE_SERVICE_ACCOUNT_JSON = nội dung JSON (dùng trên Render/cloud)
+// 2. GOOGLE_APPLICATION_CREDENTIALS = đường dẫn file JSON (dùng local)
+const GOOGLE_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 const GOOGLE_APPLICATION_CREDENTIALS =
   process.env.GOOGLE_APPLICATION_CREDENTIALS ||
   "/etc/secrets/google-service-account.json";
@@ -127,10 +131,10 @@ app.get("/", (_, res) => res.send("KIM BOT OK"));
 app.get("/ping", (_, res) => res.json({ ok: true, version: VERSION }));
 
 /* ================== GOOGLE SHEETS ================== */
-const auth = new google.auth.GoogleAuth({
-  keyFile: GOOGLE_APPLICATION_CREDENTIALS,
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
+const authConfig = GOOGLE_SERVICE_ACCOUNT_JSON
+  ? { credentials: JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON), scopes: ["https://www.googleapis.com/auth/spreadsheets"] }
+  : { keyFile: GOOGLE_APPLICATION_CREDENTIALS, scopes: ["https://www.googleapis.com/auth/spreadsheets"] };
+const auth = new google.auth.GoogleAuth(authConfig);
 const sheets = google.sheets({ version: "v4", auth });
 
 async function getRows() {
