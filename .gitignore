@@ -7,4 +7,8 @@ firestore.rules
 firestore.indexes.json
 firebase-debug.log
 *.log
+*.bak
+THONG-TIN-TAI-KHOAN.txt
+deploy-*.ps1
 .DS_Store
+

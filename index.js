@@ -1,40 +1,19 @@
 /**
  * ============================================================
- * KIM BOT – SỔ KIM THU HOẠCH RONG BIỂN
- * VERSION: KIM-SO-KIM-v2.0-FINAL-2025-12-15
+ * KIM BOT – HỆ THỐNG QUẢN LÝ VỤ MÙA LÀM KIM RONG BIỂN
+ * VERSION: KIM-SO-KIM-v3.2-TURBO-FAST-2026-FINAL
  *
- * ✅ FINAL REQUIREMENTS (CHỐT):
- * 1) Reply keyboard "menu box" Telegram: luôn hiện, bấm là chạy.
- * 2) Parsing:
- *    - token ₩ầu: Bãi (A27/A14/34/...)
- *    - ...b bắt buộc, ...k bắt buộc
- *    - ...g optional:
- *        + nếu thiếu => CẮT SẠCH (progress = max)
- *        + nếu có => CẮT DỠ theo số g (delta) và CỘNG DỒN progress
- *        + nếu progress ₩ạt max => tự thành CẮT SẠCH
- *    - ...d optional: ngày trong tháng (dd) => ghi bù ngày dd/tháng hiện tại
- *      nếu thiếu => mặc ₩ịnh HÔM QUA
- *    - "note:" optional => ghi cột Note
- *    - "nghỉ gió" / "làm bờ" => ghi tình hình, doanh thu = 0
+ * ⚡ TỐI ƯU TỐC ĐỘ CỰC NHANH (TURBO SPEED):
+ * - Bộ nhớ đệm In-Memory Cache cho dữ liệu & cấu hình: phản hồi tức thì (< 50ms)
+ * - Cache kiểm tra sheet: loại bỏ các lệnh get metadata lặp đi lặp lại
+ * - Giảm tải tối đa số lần gọi Google Sheets API
  *
- * 3) Vòng (Cycle):
- *    - vòng chỉ tăng khi có CẮT SẠCH
- *    - mọi dòng trong chu kỳ hiện tại thuộc Vòng (cleanCount + 1)
- *    - "cắt dỡ" thuộc vòng hiện tại (KHÔNG nhảy vòng)
- *
- * 4) Output:
- *    --- 🌊 SỔ KIM (Vòng: X) ---
- *    Chào <Tên>, ₩ây là kết quả của lệnh bạn gửi
- *    ... (₩úng format)
- *
- * 5) Delete:
- *    - Không cần admin
- *    - Bấm nút "Xóa ..." => Bot yêu cầu nhập 2525
- *    - Nhập 2525 => thực hiện
- *
- * 6) Lịch cắt: theo lần CẮT SẠCH gần nhất + CUT_INTERVAL_DAYS
- *    - Sort từ ngày gần nhất -> xa nhất
- *
+ * 📱 HỖ TRỢ MENU NÚT BẤM (INLINE BUTTONS) - HẠN CHẾ GÕ LỆNH:
+ * - Đi thuốc 1 chạm: Bấm chọn đám (hoặc tất cả các đám) là xong
+ * - Tách lưới 1 chạm: Bấm chọn đám là xong
+ * - Tránh bão / Nghỉ biển 1 chạm: Bấm nút bão 1 ngày, bão 2 ngày, gió to, làm bờ
+ * - Hạ thủy tàu 1 chạm
+ * - Xóa dòng gần nhất: Bấm nút xác nhận, không cần gõ 2525
  * ============================================================
  */
 
@@ -46,7 +25,7 @@ import { google } from "googleapis";
 const app = express();
 app.use(express.json());
 
-const VERSION = "KIM-SO-KIM-v2.0-FINAL-2025-12-15";
+const VERSION = "KIM-SO-KIM-v3.2-TURBO-FAST-2026-FINAL";
 console.log("🚀 RUNNING:", VERSION);
 
 /* ================== ENV ================== */
@@ -54,259 +33,23 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
-// Hỗ trợ 2 cách xác thực Google:
-// 1. GOOGLE_SERVICE_ACCOUNT_JSON = nội dung JSON (dùng trên Render/cloud)
-// 2. GOOGLE_APPLICATION_CREDENTIALS = đường dẫn file JSON (dùng local)
 const GOOGLE_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 const GOOGLE_APPLICATION_CREDENTIALS =
   process.env.GOOGLE_APPLICATION_CREDENTIALS ||
   "/etc/secrets/google-service-account.json";
 
 const CUT_INTERVAL_DAYS = Number(process.env.CUT_INTERVAL_DAYS || 15);
-const BAO_RATE = 1.7;
+const BAO_RATE = 1.7; // 1 bao tàu = 1.7 bao chuẩn tính tiền
+const CONFIRM_CODE = "2525";
+const DEFAULT_NHA_MAY_DAY = 180; // Mặc định Lưới Nhà Máy = 180 dây
 
-const CONFIRM_CODE = "2525"; // ✅ chốt mã xóa
-
-/* ================== CONFIG (MAX DÂY CHỐT) ================== */
-/**
- * ✅ NÂNG CẤP: MAX_DAY giờ có thể thay ₩ổi ₩ộng (thêm bãi / sửa số dây)
- * - Mặc ₩ịnh: DEFAULT_MAX_DAY (hard-code)
- * - Runtime: load thêm từ Google Sheet tab "CONFIG" (A:B)
- *   + A: Bãi (ví dụ A27)
- *   + B: Max dây (ví dụ 60)
- * - Khi thêm/sửa: bot sẽ lưu vào tab CONFIG ₩ể lần sau vẫn còn.
- */
-const DEFAULT_MAX_DAY = {
-  A14: 69,
-  A27: 60,
-  A22: 60,
-  "34": 109, // bãi lớn
-  B17: 69,
-  B24: 69,
-  C11: 59,
-  C12: 59,
-};
-
-// MAX_DAY dùng trong toàn bộ logic (parse / forecast / thống kê...)
-let MAX_DAY = { ...DEFAULT_MAX_DAY };
-
-// Google Sheet tab ₩ể lưu cấu hình bãi
-const CONFIG_SHEET_NAME = "CONFIG";
-
-
-async function ensureConfigSheetExists() {
-  try {
-    const meta = await sheets.spreadsheets.get({
-      spreadsheetId: GOOGLE_SHEET_ID,
-      fields: "sheets.properties.title",
-    });
-
-    const titles = (meta.data.sheets || []).map((s) => s.properties?.title).filter(Boolean);
-    if (titles.includes(CONFIG_SHEET_NAME)) return;
-
-    // Tạo tab CONFIG nếu chưa có
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: GOOGLE_SHEET_ID,
-      requestBody: {
-        requests: [{ addSheet: { properties: { title: CONFIG_SHEET_NAME } } }],
-      },
-    });
-
-    // Ghi header
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${CONFIG_SHEET_NAME}!A1:B1`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [["BAI", "MAX_DAY"]] },
-    });
-
-    console.log("✅ Created sheet CONFIG");
-  } catch (e) {
-    console.log("⚠️ ensureConfigSheetExists error:", e?.message || e);
-  }
-}
-
-/* ================== BASIC ROUTES ================== */
-app.get("/", (_, res) => res.send("KIM BOT OK"));
-app.get("/ping", (_, res) => res.json({ ok: true, version: VERSION }));
-
-/* ================== GOOGLE SHEETS ================== */
-const authConfig = GOOGLE_SERVICE_ACCOUNT_JSON
-  ? { credentials: JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON), scopes: ["https://www.googleapis.com/auth/spreadsheets"] }
-  : { keyFile: GOOGLE_APPLICATION_CREDENTIALS, scopes: ["https://www.googleapis.com/auth/spreadsheets"] };
-const auth = new google.auth.GoogleAuth(authConfig);
-const sheets = google.sheets({ version: "v4", auth });
-
-async function getRows() {
-  const r = await sheets.spreadsheets.values.get({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range: "DATA!A2:L",
-  });
-  return r.data.values || [];
-}
-
-async function appendRow(row12) {
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range: "DATA!A1",
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [row12] },
-  });
-}
-
-async function updateRow(rowNumber1Based, rowValues12) {
-  const range = `DATA!A${rowNumber1Based}:L${rowNumber1Based}`;
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [rowValues12] },
-  });
-}
-
-async function clearRow(rowNumber1Based) {
-  const range = `DATA!A${rowNumber1Based}:L${rowNumber1Based}`;
-  await sheets.spreadsheets.values.clear({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range,
-  });
-}
-
-async function clearAllData() {
-  await sheets.spreadsheets.values.clear({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range: "DATA!A2:L",
-  });
-}
-
-/* ================== GOOGLE SHEETS: CONFIG (BÃI / MAX DÂY) ================== */
-async function getConfigRows() {
-  await ensureConfigSheetExists();
-
-  // CONFIG!A2:B  => [[bai, max], ...]
-  try {
-    const r = await sheets.spreadsheets.values.get({
-      spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${CONFIG_SHEET_NAME}!A2:B`,
-    });
-    return r.data.values || [];
-  } catch (e) {
-    console.log("ℹ️ getConfigRows fallback:", e?.message || e);
-    return [];
-  }
-}
-
-async function appendConfigRow(bai, max) {
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range: `${CONFIG_SHEET_NAME}!A1`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [[String(bai).toUpperCase(), Number(max)]] },
-  });
-}
-
-async function updateConfigRow(rowNumber1Based, bai, max) {
-  const range = `${CONFIG_SHEET_NAME}!A${rowNumber1Based}:B${rowNumber1Based}`;
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [[String(bai).toUpperCase(), Number(max)]] },
-  });
-}
-
-/**
- * Upsert cấu hình bãi:
- * - Nếu ₩ã có bãi trong CONFIG => update dòng ₩ó
- * - Nếu chưa có => append dòng mới
- */
-async function upsertBaiMaxToConfig(bai, max) {
-  await ensureConfigSheetExists();
-  const rows = await getConfigRows();
-  const baiU = String(bai).toUpperCase();
-
-  for (let i = 0; i < rows.length; i++) {
-    const rBai = String(rows[i]?.[0] || "").toUpperCase();
-    if (rBai === baiU) {
-      // row 1 is header, data starts at row 2
-      const rowNumber1Based = 2 + i;
-      await updateConfigRow(rowNumber1Based, baiU, max);
-      return { action: "UPDATED" };
-    }
-  }
-
-  await appendConfigRow(baiU, max);
-  return { action: "ADDED" };
-}
-
-/**
- * Load cấu hình bãi từ tab CONFIG và merge vào MAX_DAY.
- * - Nếu CONFIG chưa tồn tại / chưa có dữ liệu => bỏ qua (vẫn dùng default).
- */
-async function loadBaiConfigFromSheet() {
-  try {
-    const rows = await getConfigRows();
-    const map = {};
-    for (const r of rows) {
-      const bai = String(r?.[0] || "").trim().toUpperCase();
-      const max = Number(r?.[1] || 0);
-      if (bai && Number.isFinite(max) && max > 0) map[bai] = max;
-    }
-
-    MAX_DAY = { ...DEFAULT_MAX_DAY, ...map };
-
-    console.log("✅ Loaded CONFIG bãi:", Object.keys(map).length, "items");
-  } catch (e) {
-    console.log("ℹ️ Không load ₩ược CONFIG (có thể chưa tạo tab CONFIG):", e?.message || e);
-    MAX_DAY = { ...DEFAULT_MAX_DAY };
-  }
-}
-
-/* ================== TELEGRAM HELPERS ================== */
-async function tg(method, payload) {
-  const resp = await fetch(`${TELEGRAM_API}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return resp.json().catch(() => ({}));
-}
-
-async function send(chatId, text, extra = {}) {
-  await tg("sendMessage", { chat_id: chatId, text, ...extra });
-}
-
-/**
- * ✅ Reply Keyboard = “hộp menu Telegram”
- * Luôn hiển thị dưới khung chat (không cần gõ menu).
- */
-function buildMainKeyboard() {
-  return {
-    keyboard: [
-      [{ text: "📅 Thống kê tháng này" }, { text: "🔁 Thống kê theo VÒNG" }],
-      [{ text: "📍 Thống kê theo BÃI" }, { text: "📆 Lịch cắt các bãi" }],
-      [{ text: "📋 Danh sách lệnh ₩ã gửi" }],
-      [{ text: "💰 TỔNG THU NHẬP" }],
-      [{ text: "➕ Thêm bãi" }, { text: "🧷 Sửa số dây bãi" }],
-      [{ text: "✏️ Sửa dòng gần nhất" }, { text: "🗑️ Xóa dòng gần nhất" }],
-      [{ text: "⚠️ XÓA SẠCH DỮ LIỆU" }],
-    ],
-    resize_keyboard: true,
-    one_time_keyboard: false,
-    is_persistent: true,
-  };
-}
-
-/** Gắn keyboard cho chat (gọi mỗi lần bot trả lời cũng ₩ược) */
-async function ensureKeyboard(chatId) {
-  await send(chatId, "✅ Menu ₩ã sẵn sàng.", {
-    reply_markup: buildMainKeyboard(),
-  });
-}
-
-/* ================== TIME (KST) ================== */
+/* ================== TIME (KST / UTC+9) ================== */
 function kst(d = new Date()) {
   return new Date(d.getTime() + 9 * 3600 * 1000);
+}
+
+function ymd(d) {
+  return d.toISOString().slice(0, 10);
 }
 
 function fmtDayVN(d) {
@@ -319,308 +62,412 @@ function fmtDayVN(d) {
     "Thứ Sáu",
     "Thứ Bảy",
   ];
-  return `${days[d.getDay()]}, ${String(d.getDate()).padStart(2, "0")}/${String(
-    d.getMonth() + 1
-  ).padStart(2, "0")}`;
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${days[d.getDay()]}, ${dd}/${mm}/${yyyy}`;
 }
 
-function ymd(d) {
-  // d ₩ã là KST date
-  return d.toISOString().slice(0, 10);
+function diffDays(ymd1, ymd2) {
+  if (!ymd1 || !ymd2) return 0;
+  const d1 = new Date(`${ymd1}T00:00:00Z`).getTime();
+  const d2 = new Date(`${ymd2}T00:00:00Z`).getTime();
+  return Math.round(Math.abs(d2 - d1) / 86400000);
+}
+
+function addDaysYmd(ymdStr, days) {
+  if (!ymdStr) return "";
+  const d = new Date(`${ymdStr}T00:00:00Z`);
+  const next = new Date(d.getTime() + Number(days) * 86400000);
+  const dd = String(next.getUTCDate()).padStart(2, "0");
+  const mm = String(next.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = next.getUTCFullYear();
+  return `${dd}/${mm}/${yyyy}`;
 }
 
 function moneyToTrieu(won) {
-  // 50,000,000 => 50 triệu
   return `${Math.round(Number(won || 0) / 1_000_000)} triệu`;
-}
-
-/* ================== PARSE INPUT ================== */
-
-
-
-function parseMultiWorkLine(text) {
-  const raw = (text || "").trim();
-  if (!raw) return null;
-
-  const parts = raw.split(/\s+/);
-  if (parts.length < 4) return null;
-
-  // must contain at least one b and one k
-  const idxB = parts.findIndex((p) => /^\d+b$/i.test(p));
-  const idxK = parts.findIndex((p) => /^\d+k$/i.test(p));
-  if (idxB === -1 || idxK === -1) return null;
-
-  const totalB = Number(parts[idxB].slice(0, -1));
-  const k = Number(parts[idxK].slice(0, -1));
-  if (!Number.isFinite(totalB) || totalB <= 0 || !Number.isFinite(k) || k <= 0) return null;
-
-  // day: allow "15d" or "15" (prefer token right after k)
-  let dayInMonth = null;
-  let idxDay = -1;
-
-  for (let i = 0; i < parts.length; i++) {
-    if (/^\d+d$/i.test(parts[i])) {
-      dayInMonth = Number(parts[i].slice(0, -1));
-      idxDay = i;
-      break;
-    }
-  }
-  if (dayInMonth == null) {
-    const afterK = idxK + 1;
-    if (afterK < parts.length && /^\d+$/.test(parts[afterK])) {
-      const cand = Number(parts[afterK]);
-      if (Number.isFinite(cand) && cand >= 1 && cand <= 31) {
-        dayInMonth = cand;
-        idxDay = afterK;
-      }
-    }
-  }
-
-  // collect bais in order, unique
-  const bais = [];
-  const baiSet = new Set();
-  for (const p of parts) {
-    const u = String(p || "").toUpperCase();
-    if (MAX_DAY[u] && !baiSet.has(u)) {
-      bais.push(u);
-      baiSet.add(u);
-    }
-  }
-  if (bais.length < 2) return null;
-
-  // ✅ QUY TẮC: "g" chỉ áp dụng cho bãi đứng TRƯỚC nó.
-  const gByBai = {};
-  let lastBai = null;
-  for (let i = 0; i < parts.length; i++) {
-    const t = parts[i];
-    const u = String(t || "").toUpperCase();
-    if (MAX_DAY[u]) {
-      lastBai = u;
-      continue;
-    }
-    if (/^\d+g$/i.test(t) && lastBai) {
-      const g = Number(String(t).slice(0, -1));
-      if (Number.isFinite(g) && g > 0) gByBai[lastBai] = g;
-    }
-  }
-
-  // note: tokens not recognized as bai/g/b/k/day -> join
-  const noteTokens = [];
-  for (let i = 0; i < parts.length; i++) {
-    const t = parts[i];
-    const u = String(t || "").toUpperCase();
-
-    if (MAX_DAY[u]) continue;
-    if (/^\d+g$/i.test(t)) continue;
-    if (i === idxB) continue;
-    if (i === idxK) continue;
-    if (i === idxDay) continue;
-
-    noteTokens.push(t);
-  }
-  const note = noteTokens.join(" ").trim();
-
-  // ✅ NEW: totalB là tổng bao của cả lệnh => chia đều cho các bãi
-  const n = bais.length;
-  const base = Math.floor(totalB / n);
-  let rem = totalB - base * n;
-
-  return bais.map((bai) => {
-    const bShare = base + (rem > 0 ? 1 : 0);
-    if (rem > 0) rem -= 1;
-
-    return {
-      type: "WORK",
-      bai,
-      gDelta: (gByBai[bai] != null ? gByBai[bai] : null),
-      b: bShare,
-      k,
-      dayInMonth: dayInMonth != null ? dayInMonth : null,
-      note,
-      _metaTotalB: totalB, // dùng cho summary
-    };
-  });
-}
-
-
-
-
-function parseTiepMultiLine(text) {
-  const raw = (text || "").trim();
-  if (!raw) return null;
-
-  // Tiep A27 A22 90b 320k [15|15d] [note...]
-  const m = raw.match(/^tiep\s+/i);
-  if (!m) return null;
-
-  const body = raw.replace(/^tiep\s+/i, "").trim();
-  const parts = body.split(/\s+/);
-  if (parts.length < 3) return null;
-
-  const idxB = parts.findIndex((p) => /^\d+b$/i.test(p));
-  const idxK = parts.findIndex((p) => /^\d+k$/i.test(p));
-  if (idxB === -1 || idxK === -1) return null;
-
-  const totalB = Number(parts[idxB].slice(0, -1));
-  const k = Number(parts[idxK].slice(0, -1));
-  if (!Number.isFinite(totalB) || totalB <= 0 || !Number.isFinite(k) || k <= 0) return null;
-
-  let dayInMonth = null;
-  let idxDay = -1;
-
-  for (let i = 0; i < parts.length; i++) {
-    if (/^\d+d$/i.test(parts[i])) {
-      dayInMonth = Number(parts[i].slice(0, -1));
-      idxDay = i;
-      break;
-    }
-  }
-  if (dayInMonth == null) {
-    const afterK = idxK + 1;
-    if (afterK < parts.length && /^\d+$/.test(parts[afterK])) {
-      const cand = Number(parts[afterK]);
-      if (Number.isFinite(cand) && cand >= 1 && cand <= 31) {
-        dayInMonth = cand;
-        idxDay = afterK;
-      }
-    }
-  }
-
-  const bais = [];
-  const baiSet = new Set();
-  for (const p of parts) {
-    const u = String(p || "").toUpperCase();
-    if (MAX_DAY[u] && !baiSet.has(u)) {
-      bais.push(u);
-      baiSet.add(u);
-    }
-  }
-  if (bais.length < 1) return null;
-
-  const noteTokens = [];
-  for (let i = 0; i < parts.length; i++) {
-    const t = parts[i];
-    const u = String(t || "").toUpperCase();
-    if (MAX_DAY[u]) continue;
-    if (i === idxB) continue;
-    if (i === idxK) continue;
-    if (i === idxDay) continue;
-    noteTokens.push(t);
-  }
-  const note = noteTokens.join(" ").trim();
-
-  const n = bais.length;
-  const base = Math.floor(totalB / n);
-  let rem = totalB - base * n;
-
-  return bais.map((bai) => {
-    const bShare = base + (rem > 0 ? 1 : 0);
-    if (rem > 0) rem -= 1;
-
-    return {
-      type: "TIEP",
-      bai,
-      b: bShare,
-      k,
-      dayInMonth: dayInMonth != null ? dayInMonth : null,
-      note,
-      _metaTotalB: totalB,
-    };
-  });
-}
-
-
-function parseWorkLine(text) {
-  const raw = (text || "").trim();
-  if (!raw) return null;
-
-  const lower = raw.toLowerCase().trim();
-
-  // nghỉ gió / làm bờ
-  if (lower.includes("nghỉ gió") || lower.includes("làm bờ") || lower.includes("lam bo")) {
-    return { type: "NO_WORK", tinhHinh: lower.includes("nghỉ gió") ? "Nghỉ gió" : "Làm bờ" };
-  }
-
-  const parts = raw.split(/\s+/);
-  const bai = (parts[0] || "").toUpperCase();
-  if (!bai || !MAX_DAY[bai]) return null;
-
-  let g = null; // delta g nếu có
-  let b = null;
-  let k = null;
-  let d = null;
-  let note = "";
-
-  // note:
-  const noteIdx = parts.findIndex((p) => p.toLowerCase().startsWith("note:"));
-  if (noteIdx >= 0) {
-    note = parts
-      .slice(noteIdx)
-      .join(" ")
-      .replace(/^note:\s*/i, "")
-      .trim();
-  }
-
-  for (const p of parts) {
-    if (/^\d+g$/i.test(p)) g = Number(p.slice(0, -1));
-    if (/^\d+b$/i.test(p)) b = Number(p.slice(0, -1));
-    if (/^\d+k$/i.test(p)) k = Number(p.slice(0, -1));
-    if (/^\d+d$/i.test(p)) d = Number(p.slice(0, -1));
-  }
-
-  if (!b || !k) return null;
-
-  // g thiếu => hiểu là CẮT SẠCH (progress = max)
-  return { type: "WORK", bai, gDelta: g, b, k, dayInMonth: d, note };
-}
-
-
-function computeLastPartialDelta(allObjs, bai) {
-  const max = MAX_DAY[bai];
-  const rows = allObjs.filter((o) => o.bai === bai && o.tinhHinh && (o.tinhHinh === "Cắt sạch" || o.tinhHinh === "Cắt dỡ"));
-  if (!rows.length) return null;
-
-  const last = rows[rows.length - 1];
-  const lastProgress = Number(last.progress || 0);
-
-  if (lastProgress >= max) return null; // ₩ã sạch, không thể "tiep"
-
-  // tìm progress trước ₩ó ₩ể tính delta
-  const prev = rows.length >= 2 ? rows[rows.length - 2] : null;
-  const prevProgress = prev ? Number(prev.progress || 0) : 0;
-
-  const delta = Math.max(0, lastProgress - prevProgress);
-  if (delta > 0) return delta;
-
-  // fallback: nếu không tính ₩ược, dùng lastProgress (giả sử bắt ₩ầu từ 0)
-  return lastProgress > 0 ? lastProgress : null;
 }
 
 function baoChuan(baoTau) {
   return Math.round(Number(baoTau || 0) * BAO_RATE);
 }
 
-/* ================== DATA MODEL (A-L) ==================
-A Timestamp
-B Date (YYYY-MM-DD)
-C Thu (Name)
-D ViTri (Bai)
-E DayG (progressG sau lệnh)  ✅ QUAN TRỌNG: là TIẾN ĐỘ CỘNG DỒN, không phải delta
-F MaxG
-G TinhHinh ("Cắt sạch" / "Cắt dỡ" / "Nghỉ gió" / "Làm bờ")
-H BaoTau
-I BaoChuan
-J GiaK
-K Won
-L Note
-====================================================== */
+/* ================== QUẢN LÝ MÙA VỤ ================== */
+function getSeasonKey(d = kst()) {
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + 1;
+  if (m >= 6) {
+    return `${y}_${y + 1}`;
+  } else {
+    return `${y - 1}_${y}`;
+  }
+}
+
+function getSeasonDisplay(seasonKey = getSeasonKey()) {
+  return seasonKey.replace("_", "-");
+}
+
+function getDataSheetName(seasonKey = getSeasonKey()) {
+  return `DATA_${seasonKey}`;
+}
+
+function getConfigSheetName(seasonKey = getSeasonKey()) {
+  return `CONFIG_${seasonKey}`;
+}
+
+/* ================== GOOGLE SHEETS & IN-MEMORY CACHE ================== */
+const authConfig = GOOGLE_SERVICE_ACCOUNT_JSON
+  ? {
+      credentials: JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON),
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    }
+  : {
+      keyFile: GOOGLE_APPLICATION_CREDENTIALS,
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    };
+const auth = new google.auth.GoogleAuth(authConfig);
+const sheets = google.sheets({ version: "v4", auth });
+
+// Cache sheet check để không gọi spreadsheets.get lặp đi lặp lại
+const verifiedSheets = new Set();
+
+const CONFIG_HEADERS = [
+  "DAM",
+  "LOAI_LUOI",
+  "SO_DAY",
+  "NGAY_THA",
+  "NGAY_TACH",
+  "NGAY_THUOC_CUOI",
+  "NOTE",
+];
+
+const DATA_HEADERS = [
+  "Timestamp", // A
+  "Date",      // B
+  "Thu",       // C
+  "ViTri",     // D
+  "DayG",      // E
+  "MaxG",      // F
+  "TinhHinh",  // G
+  "BaoTau",    // H
+  "BaoChuan",  // I
+  "GiaK",      // J
+  "Won",       // K
+  "Note",      // L
+];
+
+// Caches
+let DAMS_CONFIG = {};
+let MAX_DAY = {};
+let cachedDataRows = [];
+let isDataLoaded = false;
+
+async function ensureSheetWithHeader(sheetName, headerRow) {
+  if (verifiedSheets.has(sheetName)) return;
+  try {
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      fields: "sheets.properties.title",
+    });
+    const titles = (meta.data.sheets || [])
+      .map((s) => s.properties?.title)
+      .filter(Boolean);
+
+    if (!titles.includes(sheetName)) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: GOOGLE_SHEET_ID,
+        requestBody: {
+          requests: [{ addSheet: { properties: { title: sheetName } } }],
+        },
+      });
+
+      const colEndLetter = String.fromCharCode(64 + headerRow.length);
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: GOOGLE_SHEET_ID,
+        range: `${sheetName}!A1:${colEndLetter}1`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [headerRow] },
+      });
+      console.log(`✅ Created sheet ${sheetName}`);
+    }
+    verifiedSheets.add(sheetName);
+  } catch (e) {
+    console.error(`⚠️ ensureSheetWithHeader error (${sheetName}):`, e?.message || e);
+  }
+}
+
+function normalizeLoaiLuoi(raw) {
+  const s = String(raw || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "");
+
+  if (s.includes("nhamay") || s === "nm") return "Lưới Nhà Máy";
+  if (s.includes("tunhien") || s === "tn") return "Lưới Tự Nhiên";
+  if (s.includes("so") || s.includes("hao") || s.includes("cothao") || s.includes("cotso"))
+    return "Lưới Sò";
+  return "Lưới Tự Nhiên";
+}
+
+async function loadConfigFromSheet() {
+  const seasonKey = getSeasonKey();
+  const cfgName = getConfigSheetName(seasonKey);
+  await ensureSheetWithHeader(cfgName, CONFIG_HEADERS);
+  await ensureSheetWithHeader(getDataSheetName(seasonKey), DATA_HEADERS);
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${cfgName}!A2:G`,
+    });
+    const rows = res.data.values || [];
+
+    const newMap = {};
+    const newMaxDay = {};
+
+    rows.forEach((r, idx) => {
+      const dam = String(r?.[0] || "").trim().toUpperCase();
+      if (!dam) return;
+
+      const loaiLuoi = String(r?.[1] || "").trim() || "Lưới Tự Nhiên";
+      let soDay = Number(r?.[2] || 0);
+      if (loaiLuoi === "Lưới Nhà Máy" && (!soDay || soDay <= 0)) {
+        soDay = DEFAULT_NHA_MAY_DAY;
+      }
+      if (!soDay || soDay <= 0) soDay = 60;
+
+      newMap[dam] = {
+        dam,
+        loaiLuoi,
+        soDay,
+        ngayTha: r?.[3] || "",
+        ngayTach: r?.[4] || "",
+        ngayThuocCuoi: r?.[5] || "",
+        note: r?.[6] || "",
+        rowIndex: 2 + idx,
+      };
+      newMaxDay[dam] = soDay;
+    });
+
+    const DEFAULT_LEGACY_MAX_DAY = {
+      A14: 69,
+      A27: 60,
+      A22: 60,
+      "34": 109,
+      B17: 69,
+      B24: 69,
+      C11: 59,
+      C12: 59,
+    };
+
+    DAMS_CONFIG = newMap;
+    MAX_DAY = { ...DEFAULT_LEGACY_MAX_DAY, ...newMaxDay };
+    console.log(
+      `✅ Loaded ${Object.keys(DAMS_CONFIG).length} đám từ tab ${cfgName}`
+    );
+  } catch (e) {
+    console.log("ℹ️ Load config sheet error:", e?.message || e);
+  }
+}
+
+async function upsertDamConfig(dam, patch = {}) {
+  const damU = String(dam).trim().toUpperCase();
+  const seasonKey = getSeasonKey();
+  const cfgName = getConfigSheetName(seasonKey);
+  await ensureSheetWithHeader(cfgName, CONFIG_HEADERS);
+
+  const existing = DAMS_CONFIG[damU];
+  const loaiLuoi = patch.loaiLuoi || existing?.loaiLuoi || "Lưới Nhà Máy";
+  let soDay = Number(patch.soDay ?? existing?.soDay ?? 0);
+  if (loaiLuoi === "Lưới Nhà Máy" && (!soDay || soDay <= 0)) {
+    soDay = DEFAULT_NHA_MAY_DAY;
+  }
+  if (!soDay || soDay <= 0) soDay = 60;
+
+  const ngayTha = patch.ngayTha !== undefined ? patch.ngayTha : existing?.ngayTha || "";
+  const ngayTach = patch.ngayTach !== undefined ? patch.ngayTach : existing?.ngayTach || "";
+  const ngayThuocCuoi =
+    patch.ngayThuocCuoi !== undefined
+      ? patch.ngayThuocCuoi
+      : existing?.ngayThuocCuoi || "";
+  const note = patch.note !== undefined ? patch.note : existing?.note || "";
+
+  const rowValues = [damU, loaiLuoi, soDay, ngayTha, ngayTach, ngayThuocCuoi, note];
+
+  if (existing && existing.rowIndex) {
+    DAMS_CONFIG[damU] = {
+      ...existing,
+      loaiLuoi,
+      soDay,
+      ngayTha,
+      ngayTach,
+      ngayThuocCuoi,
+      note,
+    };
+    MAX_DAY[damU] = soDay;
+
+    sheets.spreadsheets.values
+      .update({
+        spreadsheetId: GOOGLE_SHEET_ID,
+        range: `${cfgName}!A${existing.rowIndex}:G${existing.rowIndex}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [rowValues] },
+      })
+      .catch((err) => console.error("Async updateDamConfig error:", err));
+  } else {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${cfgName}!A1`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [rowValues] },
+    });
+    await loadConfigFromSheet();
+  }
+
+  MAX_DAY[damU] = soDay;
+  return DAMS_CONFIG[damU];
+}
+
+/* ================== THAO TÁC DATA VỚI IN-MEMORY CACHE (SIÊU NHANH) ================== */
+async function getSeasonDataRows(forceRefresh = false) {
+  if (isDataLoaded && !forceRefresh) {
+    return cachedDataRows;
+  }
+  const seasonKey = getSeasonKey();
+  const dataName = getDataSheetName(seasonKey);
+  await ensureSheetWithHeader(dataName, DATA_HEADERS);
+
+  try {
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: `${dataName}!A2:L`,
+    });
+    cachedDataRows = r.data.values || [];
+    isDataLoaded = true;
+    return cachedDataRows;
+  } catch (e) {
+    console.log(`ℹ️ getSeasonDataRows error:`, e?.message || e);
+    return cachedDataRows;
+  }
+}
+
+async function appendSeasonDataRow(row12) {
+  // Cập nhật cache tức thì để đọc lại ngay lập tức không bị trễ
+  cachedDataRows.push(row12);
+
+  const seasonKey = getSeasonKey();
+  const dataName = getDataSheetName(seasonKey);
+  await ensureSheetWithHeader(dataName, DATA_HEADERS);
+
+  // Ghi Google Sheets
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: GOOGLE_SHEET_ID,
+    range: `${dataName}!A1`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [row12] },
+  });
+}
+
+async function updateSeasonDataRow(rowNumber1Based, rowValues12) {
+  const idx0 = rowNumber1Based - 2;
+  if (idx0 >= 0 && idx0 < cachedDataRows.length) {
+    cachedDataRows[idx0] = rowValues12;
+  }
+
+  const seasonKey = getSeasonKey();
+  const dataName = getDataSheetName(seasonKey);
+  const range = `${dataName}!A${rowNumber1Based}:L${rowNumber1Based}`;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: GOOGLE_SHEET_ID,
+    range,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [rowValues12] },
+  });
+}
+
+async function clearSeasonDataRow(rowNumber1Based) {
+  const idx0 = rowNumber1Based - 2;
+  if (idx0 >= 0 && idx0 < cachedDataRows.length) {
+    cachedDataRows.splice(idx0, 1);
+  }
+
+  const seasonKey = getSeasonKey();
+  const dataName = getDataSheetName(seasonKey);
+  const range = `${dataName}!A${rowNumber1Based}:L${rowNumber1Based}`;
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: GOOGLE_SHEET_ID,
+    range,
+  });
+}
+
+async function clearAllSeasonData() {
+  cachedDataRows = [];
+  const seasonKey = getSeasonKey();
+  const dataName = getDataSheetName(seasonKey);
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: GOOGLE_SHEET_ID,
+    range: `${dataName}!A2:L`,
+  });
+}
+
+/* ================== DỮ LIỆU VỤ CŨ (TAB DATA NĂM NGOÁI) ================== */
+let cachedLegacyRows = null;
+async function getLegacyDataRows() {
+  if (cachedLegacyRows) return cachedLegacyRows;
+  try {
+    const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: "DATA!A2:L",
+    });
+    cachedLegacyRows = r.data.values || [];
+    return cachedLegacyRows;
+  } catch (e) {
+    console.log("ℹ️ getLegacyDataRows fallback:", e?.message || e);
+    return [];
+  }
+}
+
+async function reportLegacySeason(chatId) {
+  const rows = await getLegacyDataRows();
+  const objs = rows.map(rowToObj);
+  let totalWon = 0;
+  let totalBao = 0;
+
+  for (const o of objs) {
+    if (o.won > 0) {
+      totalWon += o.won;
+      totalBao += o.baoTau;
+    }
+  }
+
+  const last10 = objs.filter((o) => o.won > 0).slice(-10);
+  let listStr = "";
+  last10.forEach((o) => {
+    listStr += `• ${o.date}: ${o.bai} ${o.baoTau}b ${o.giaK}k (${Number(o.won).toLocaleString()} ₩)\n`;
+  });
+
+  const text =
+`📂 DỮ LIỆU VỤ CŨ (LỊCH SỬ NĂM NGOÁI - TAB DATA)
+----------------------------------
+📦 Tổng sản lượng: ${totalBao.toLocaleString()} bao (≈ ${baoChuan(totalBao).toLocaleString()} bao chuẩn)
+💵 TỔNG DOANH THU: ${totalWon.toLocaleString()} ₩ (${moneyToTrieu(totalWon)})
+----------------------------------
+📋 10 lệnh cắt cuối cùng của vụ cũ:
+${listStr || "(Chưa có lệnh cắt nào)"}
+
+💡 Toàn bộ dữ liệu này vẫn được lưu giữ an toàn 100% trong tab "DATA" trên Google Sheets của bạn.`.trim();
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
+}
 
 function rowToObj(r) {
   return {
     ts: r?.[0] || "",
     date: r?.[1] || "",
     thu: r?.[2] || "",
-    bai: r?.[3] || "",
+    bai: String(r?.[3] || "").trim().toUpperCase(),
     dayG: Number(r?.[4] || 0),
     maxG: Number(r?.[5] || 0),
     tinhHinh: r?.[6] || "",
@@ -632,63 +479,166 @@ function rowToObj(r) {
   };
 }
 
-/* ================== HELPERS: SORT / SEARCH ================== */
 function sortByDateTs(objs) {
-  // stable: date then ts
   return [...objs].sort((a, b) => (a.date + a.ts).localeCompare(b.date + b.ts));
 }
 
 function isWorkRow(o) {
-  return !!o.bai && o.maxG > 0;
+  return (
+    !!o.bai &&
+    o.maxG > 0 &&
+    (o.tinhHinh === "Cắt sạch" || o.tinhHinh === "Cắt dỡ")
+  );
 }
 
-function isCleanRow(o) {
-  return isWorkRow(o) && Number(o.dayG) === Number(o.maxG);
+/* ================== TELEGRAM HELPERS ================== */
+async function tg(method, payload) {
+  try {
+    const resp = await fetch(`${TELEGRAM_API}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return await resp.json().catch(() => ({}));
+  } catch (err) {
+    console.error("tg fetch error:", err?.message || err);
+    return {};
+  }
 }
 
-/**
- * Lấy trạng thái bãi:
- * - cleanDone: số lần cắt sạch ₩ã hoàn thành
- * - progress: tiến ₩ộ hiện tại trong vòng (0..max)
- * - lastCleanDate: ngày cắt sạch gần nhất
- */
+async function send(chatId, text, extra = {}) {
+  await tg("sendMessage", { chat_id: chatId, text, ...extra });
+}
+
+function buildMainKeyboard() {
+  return {
+    keyboard: [
+      [{ text: "📋 Tình hình các đám" }, { text: "📆 Lịch cắt các đám" }],
+      [{ text: "💊 Ghi nhận ĐI THUỐC" }, { text: "🕸️ Ghi nhận TÁCH LƯỚI" }],
+      [{ text: "🚢 Mốc Hạ thủy / Thả lưới" }, { text: "🌀 Tránh bão / Nghỉ gió" }],
+      [{ text: "📅 Thống kê tháng này" }, { text: "🔁 Thống kê theo VÒNG" }],
+      [{ text: "💰 TỔNG THU VỤ MÙA" }, { text: "📋 Lệnh cắt đã gửi" }],
+      [{ text: "📂 XEM DỮ LIỆU VỤ CŨ" }, { text: "➕ Thêm/Sửa Đám & Lưới" }],
+      [{ text: "✏️ Sửa dòng gần nhất" }, { text: "🗑️ Xóa dòng gần nhất" }],
+      [{ text: "ℹ️ Hướng dẫn cú pháp" }],
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false,
+    is_persistent: true,
+  };
+}
+
+/* ================== PARSE NGÀY LINH HOẠT ================== */
+function parseCustomDate(token, defaultToYesterday = true) {
+  const now = kst();
+  if (!token) {
+    if (defaultToYesterday) {
+      return new Date(now.getTime() - 86400000);
+    }
+    return now;
+  }
+
+  const str = String(token).trim();
+  if (/^\d{1,2}\/\d{1,2}(\/\d{4})?$/.test(str)) {
+    const parts = str.split("/");
+    const d = Number(parts[0]);
+    const m = Number(parts[1]) - 1;
+    let y = parts[2] ? Number(parts[2]) : now.getFullYear();
+    return new Date(y, m, d);
+  }
+
+  let dayNum = null;
+  if (/^\d+d$/i.test(str)) {
+    dayNum = Number(str.slice(0, -1));
+  } else if (/^\d+$/.test(str)) {
+    const n = Number(str);
+    if (n >= 1 && n <= 31) dayNum = n;
+  }
+
+  if (dayNum != null) {
+    return new Date(now.getFullYear(), now.getMonth(), dayNum);
+  }
+
+  return defaultToYesterday ? new Date(now.getTime() - 86400000) : now;
+}
+
+/* ================== TIẾN ĐỘ & TRẠNG THÁI CÁC ĐÁM ================== */
 function computeBaiState(allObjs, bai) {
-  const max = MAX_DAY[bai] || 0;
+  const damU = String(bai).toUpperCase();
+  const max = MAX_DAY[damU] || DAMS_CONFIG[damU]?.soDay || DEFAULT_NHA_MAY_DAY;
 
-  const sorted = sortByDateTs(allObjs).filter((o) => o.bai === bai);
+  const sorted = sortByDateTs(allObjs).filter((o) => o.bai === damU);
   let cleanDone = 0;
   let progress = 0;
   let lastCleanDate = "";
+  let lastWorkDate = "";
 
   for (const o of sorted) {
-    // chỉ tính dòng work của bãi
     if (!isWorkRow(o)) continue;
+    lastWorkDate = o.date || lastWorkDate;
 
-    // nếu clean => ₩óng vòng, reset progress
     if (Number(o.dayG) >= max && max > 0) {
       cleanDone += 1;
-      progress = 0; // reset sau khi sạch
+      progress = 0;
       lastCleanDate = o.date || lastCleanDate;
     } else {
-      // cắt dỡ: progress là tiến ₩ộ ₩ã lưu ở cột dayG
       progress = Math.min(Number(o.dayG || 0), max);
     }
   }
 
   const currentVong = Math.max(1, cleanDone + 1);
-
-  return { bai, max, cleanDone, currentVong, progress, lastCleanDate };
+  return {
+    bai: damU,
+    max,
+    cleanDone,
+    currentVong,
+    progress,
+    lastCleanDate,
+    lastWorkDate,
+  };
 }
 
-/**
- * Gán vòng cho từng dòng (toàn bộ DATA):
- * - vòng của một dòng = cleanCountBefore + 1
- * - cleanCountBefore tăng khi gặp dòng CẮT SẠCH
- * - cắt dỡ vẫn thuộc vòng hiện tại (không nhảy vòng)
- */
+function buildWorkProgress({ allObjs, bai, gDelta }) {
+  const damU = String(bai).toUpperCase();
+  const max = MAX_DAY[damU] || DAMS_CONFIG[damU]?.soDay || DEFAULT_NHA_MAY_DAY;
+  const st = computeBaiState(allObjs, damU);
+
+  let newProgress;
+  let tinhHinh;
+
+  if (!gDelta) {
+    newProgress = max;
+    tinhHinh = "Cắt sạch";
+  } else {
+    newProgress = Math.min(max, Number(st.progress || 0) + Number(gDelta));
+    tinhHinh = newProgress >= max ? "Cắt sạch" : "Cắt dỡ";
+  }
+
+  const vong = st.currentVong;
+  return { max, newProgress, tinhHinh, vong };
+}
+
+function computeLastPartialDelta(allObjs, bai) {
+  const damU = String(bai).toUpperCase();
+  const max = MAX_DAY[damU] || DAMS_CONFIG[damU]?.soDay || DEFAULT_NHA_MAY_DAY;
+  const rows = allObjs.filter(
+    (o) => o.bai === damU && (o.tinhHinh === "Cắt sạch" || o.tinhHinh === "Cắt dỡ")
+  );
+  if (!rows.length) return null;
+
+  const last = rows[rows.length - 1];
+  const lastProgress = Number(last.progress || last.dayG || 0);
+  if (lastProgress >= max) return null;
+
+  const prev = rows.length >= 2 ? rows[rows.length - 2] : null;
+  const prevProgress = prev ? Number(prev.progress || prev.dayG || 0) : 0;
+  const delta = Math.max(0, lastProgress - prevProgress);
+  return delta > 0 ? delta : lastProgress > 0 ? lastProgress : null;
+}
+
 function assignVongAll(objs) {
   const sorted = sortByDateTs(objs);
-  const doneMap = new Map(); // bai -> cleanDone
+  const doneMap = new Map();
   const out = [];
 
   for (const o of sorted) {
@@ -696,143 +646,911 @@ function assignVongAll(objs) {
       out.push({ ...o, vong: 0 });
       continue;
     }
-
     const bai = o.bai;
-    const max = MAX_DAY[bai] || o.maxG || 0;
+    const max = MAX_DAY[bai] || o.maxG || DEFAULT_NHA_MAY_DAY;
     const done = doneMap.get(bai) || 0;
-
     const vong = Math.max(1, done + 1);
-
-    // nếu dòng này là clean => sau dòng này tăng done
     const clean = max > 0 && Number(o.dayG) >= Number(max);
 
     out.push({ ...o, vong, isClean: clean });
-
     if (clean) doneMap.set(bai, done + 1);
   }
-
   return out;
 }
 
-/* ================== FORECAST ================== */
-function addDaysYmd(ymdStr, days) {
-  if (!ymdStr) return "";
-  const d = new Date(`${ymdStr}T00:00:00`);
-  const next = new Date(d.getTime() + Number(days) * 86400000);
-  const dd = String(next.getDate()).padStart(2, "0");
-  const mm = String(next.getMonth() + 1).padStart(2, "0");
-  const yyyy = next.getFullYear();
-  return `${dd}/${mm}/${yyyy}`;
-}
-
-function forecastForBai(state) {
-  if (!state?.lastCleanDate) return ""; // chưa có sạch
-  return addDaysYmd(state.lastCleanDate, CUT_INTERVAL_DAYS);
-}
-
-/* ================== OUTPUT TEMPLATE ================== */
-
-/* ================== PARSE: THÊM BÃI / SỬA SỐ DÂY ================== */
-
-function parseBaiMaxCommand(text) {
+/* ================== PARSE LỆNH CẮT KIM ================== */
+function parseWorkLine(text) {
   const raw = (text || "").trim();
-  const lower = raw.toLowerCase();
+  if (!raw) return null;
+  const lower = raw.toLowerCase().trim();
 
-  const isAdd = lower.startsWith("them bai ") || lower.startsWith("them_bai ");
-  const isEdit = lower.startsWith("sua day ") || lower.startsWith("sua_day ");
+  if (lower.startsWith("tranh bao") || lower.startsWith("nghi bao") || lower === "bao") {
+    return { type: "TRANH_BAO" };
+  }
+  if (lower.includes("nghỉ gió") || lower.includes("nghi gio")) {
+    return { type: "NO_WORK", tinhHinh: "Nghỉ gió" };
+  }
+  if (lower.includes("làm bờ") || lower.includes("lam bo")) {
+    return { type: "NO_WORK", tinhHinh: "Làm bờ" };
+  }
 
-  if (!isAdd && !isEdit) return null;
+  const parts = raw.split(/\s+/);
+  const bai = (parts[0] || "").toUpperCase();
 
-  const body = raw
-    .replace(/^them bai\s+/i, "")
-    .replace(/^them_bai\s+/i, "")
-    .replace(/^sua day\s+/i, "")
-    .replace(/^sua_day\s+/i, "")
-    .trim();
+  const hasB = parts.some((p) => /^\d+b$/i.test(p));
+  const hasK = parts.some((p) => /^\d+k$/i.test(p));
+  if (!hasB || !hasK) return null;
 
+  let g = null;
+  let b = null;
+  let k = null;
+  let dateToken = null;
+  let note = "";
+
+  const noteIdx = parts.findIndex((p) => p.toLowerCase().startsWith("note:"));
+  if (noteIdx >= 0) {
+    note = parts
+      .slice(noteIdx)
+      .join(" ")
+      .replace(/^note:\s*/i, "")
+      .trim();
+  }
+
+  for (let i = 1; i < parts.length; i++) {
+    const p = parts[i];
+    if (i === noteIdx) break;
+    if (/^\d+g$/i.test(p)) g = Number(p.slice(0, -1));
+    else if (/^\d+b$/i.test(p)) b = Number(p.slice(0, -1));
+    else if (/^\d+k$/i.test(p)) k = Number(p.slice(0, -1));
+    else if (/^\d+d$/i.test(p) || /^\d{1,2}\/\d{1,2}(\/\d{4})?$/.test(p)) {
+      dateToken = p;
+    }
+  }
+
+  if (!b || !k) return null;
+  return { type: "WORK", bai, gDelta: g, b, k, dateToken, note };
+}
+
+function parseMultiWorkLine(text) {
+  const raw = (text || "").trim();
+  if (!raw) return null;
+
+  const parts = raw.split(/\s+/);
+  if (parts.length < 4) return null;
+
+  const idxB = parts.findIndex((p) => /^\d+b$/i.test(p));
+  const idxK = parts.findIndex((p) => /^\d+k$/i.test(p));
+  if (idxB === -1 || idxK === -1) return null;
+
+  const totalB = Number(parts[idxB].slice(0, -1));
+  const k = Number(parts[idxK].slice(0, -1));
+  if (!Number.isFinite(totalB) || totalB <= 0 || !Number.isFinite(k) || k <= 0)
+    return null;
+
+  let dateToken = null;
+  let idxDate = -1;
+  for (let i = 0; i < parts.length; i++) {
+    if (/^\d+d$/i.test(parts[i]) || /^\d{1,2}\/\d{1,2}(\/\d{4})?$/.test(parts[i])) {
+      dateToken = parts[i];
+      idxDate = i;
+      break;
+    }
+  }
+
+  const bais = [];
+  const baiSet = new Set();
+  for (const p of parts) {
+    const u = String(p || "").toUpperCase();
+    if ((MAX_DAY[u] || DAMS_CONFIG[u]) && !baiSet.has(u)) {
+      bais.push(u);
+      baiSet.add(u);
+    }
+  }
+  if (bais.length < 2) return null;
+
+  const gByBai = {};
+  let lastBai = null;
+  for (let i = 0; i < parts.length; i++) {
+    const t = parts[i];
+    const u = String(t || "").toUpperCase();
+    if (MAX_DAY[u] || DAMS_CONFIG[u]) {
+      lastBai = u;
+      continue;
+    }
+    if (/^\d+g$/i.test(t) && lastBai) {
+      const g = Number(String(t).slice(0, -1));
+      if (Number.isFinite(g) && g > 0) gByBai[lastBai] = g;
+    }
+  }
+
+  const noteTokens = [];
+  for (let i = 0; i < parts.length; i++) {
+    const t = parts[i];
+    const u = String(t || "").toUpperCase();
+    if (MAX_DAY[u] || DAMS_CONFIG[u]) continue;
+    if (/^\d+g$/i.test(t)) continue;
+    if (i === idxB || i === idxK || i === idxDate) continue;
+    noteTokens.push(t);
+  }
+  const note = noteTokens.join(" ").trim();
+
+  const n = bais.length;
+  const base = Math.floor(totalB / n);
+  let rem = totalB - base * n;
+
+  return bais.map((bai) => {
+    const bShare = base + (rem > 0 ? 1 : 0);
+    if (rem > 0) rem -= 1;
+    return {
+      type: "WORK",
+      bai,
+      gDelta: gByBai[bai] != null ? gByBai[bai] : null,
+      b: bShare,
+      k,
+      dateToken,
+      note,
+      _metaTotalB: totalB,
+    };
+  });
+}
+
+function parseTiepMultiLine(text) {
+  const raw = (text || "").trim();
+  if (!raw || !raw.match(/^tiep\s+/i)) return null;
+
+  const body = raw.replace(/^tiep\s+/i, "").trim();
   const parts = body.split(/\s+/);
-  if (parts.length < 2) return null;
+  if (parts.length < 3) return null;
 
-  const max = Number(parts[parts.length - 1]);
-  if (!Number.isFinite(max) || max <= 0) return null;
+  const idxB = parts.findIndex((p) => /^\d+b$/i.test(p));
+  const idxK = parts.findIndex((p) => /^\d+k$/i.test(p));
+  if (idxB === -1 || idxK === -1) return null;
 
-  const bai = parts.slice(0, -1).join(" ").toUpperCase();
+  const totalB = Number(parts[idxB].slice(0, -1));
+  const k = Number(parts[idxK].slice(0, -1));
+  if (!Number.isFinite(totalB) || totalB <= 0 || !Number.isFinite(k) || k <= 0)
+    return null;
 
-  return {
-    action: isAdd ? "ADD" : "EDIT",
-    bai,
-    max: Math.round(max),
-  };
+  let dateToken = null;
+  let idxDate = -1;
+  for (let i = 0; i < parts.length; i++) {
+    if (/^\d+d$/i.test(parts[i]) || /^\d{1,2}\/\d{1,2}(\/\d{4})?$/.test(parts[i])) {
+      dateToken = parts[i];
+      idxDate = i;
+      break;
+    }
+  }
+
+  const bais = [];
+  const baiSet = new Set();
+  for (const p of parts) {
+    const u = String(p || "").toUpperCase();
+    if ((MAX_DAY[u] || DAMS_CONFIG[u]) && !baiSet.has(u)) {
+      bais.push(u);
+      baiSet.add(u);
+    }
+  }
+  if (bais.length < 1) return null;
+
+  const noteTokens = [];
+  for (let i = 0; i < parts.length; i++) {
+    const t = parts[i];
+    const u = String(t || "").toUpperCase();
+    if (MAX_DAY[u] || DAMS_CONFIG[u]) continue;
+    if (i === idxB || i === idxK || i === idxDate) continue;
+    noteTokens.push(t);
+  }
+  const note = noteTokens.join(" ").trim();
+
+  const n = bais.length;
+  const base = Math.floor(totalB / n);
+  let rem = totalB - base * n;
+
+  return bais.map((bai) => {
+    const bShare = base + (rem > 0 ? 1 : 0);
+    if (rem > 0) rem -= 1;
+    return {
+      type: "TIEP",
+      bai,
+      b: bShare,
+      k,
+      dateToken,
+      note,
+      _metaTotalB: totalB,
+    };
+  });
 }
-function buildSaiCuPhapText() {
-  return (
-    "❌ Nhập sai rồi bạn iu ơi 😅\n" +
-    "Ví dụ:\n" +
-    "A27 60b 220k\n" +
-    "A27 30g 40b 220k\n" +
-    "A27 80b 120k 5d"
-  );
-}
 
-async function sendSoKim({
-  chatId,
-  userName,
-  vong,
-  dateYmd,
-  bai,
-  progressG,
-  maxG,
-  tinhHinh,
-  baoTau,
-  baoChuanX,
-  giaK,
-  won,
-  totalToNow,
-  forecast,
-}) {
-  const dateObj = new Date(`${dateYmd}T00:00:00`);
+/* ================== THỰC HIỆN LỆNH CẮT KIM ================== */
+async function processWorkEntry(parsed, chatId, userName) {
+  const damU = parsed.bai.toUpperCase();
+  if (!MAX_DAY[damU]) {
+    await upsertDamConfig(damU, {
+      loaiLuoi: "Lưới Nhà Máy",
+      soDay: DEFAULT_NHA_MAY_DAY,
+    });
+  }
+
+  const workDate = parseCustomDate(parsed.dateToken, true);
+  const dateYmd = ymd(workDate);
+
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
+
+  const { max, newProgress, tinhHinh, vong } = buildWorkProgress({
+    allObjs: objs,
+    bai: damU,
+    gDelta: parsed.gDelta,
+  });
+
+  const bc = baoChuan(parsed.b);
+  const won = bc * parsed.k * 1000;
+
+  const totalBefore = objs.reduce((s, o) => s + (o.won || 0), 0);
+  const totalToNow = totalBefore + won;
+
+  const stBefore = computeBaiState(objs, damU);
+  const forecast =
+    tinhHinh === "Cắt sạch"
+      ? addDaysYmd(dateYmd, CUT_INTERVAL_DAYS)
+      : stBefore.lastCleanDate
+      ? addDaysYmd(stBefore.lastCleanDate, CUT_INTERVAL_DAYS)
+      : "";
+
+  await appendSeasonDataRow([
+    new Date().toISOString(),
+    dateYmd,
+    userName,
+    damU,
+    newProgress,
+    max,
+    tinhHinh,
+    parsed.b,
+    bc,
+    parsed.k,
+    won,
+    parsed.note || "",
+  ]);
+
+  const cfg = DAMS_CONFIG[damU];
+  let thuocNote = "";
+  if (cfg?.ngayThuocCuoi) {
+    const kc = diffDays(cfg.ngayThuocCuoi, dateYmd);
+    thuocNote = `\n💊 Lần đi thuốc gần nhất: ${cfg.ngayThuocCuoi} (cách đây ${kc} ngày)`;
+  }
 
   const text =
 `--- 🌊 SỔ KIM (Vòng: ${vong}) ---
-Chào ${userName}, ₩ây là kết quả của lệnh bạn gửi
+[Vụ mùa: ${getSeasonDisplay()}]
+Chào ${userName}, đây là kết quả lệnh của bạn:
 
-📅 Ngày: ${fmtDayVN(dateObj)}
-📍 Vị trí: ${bai}
-✂️ Tình hình: ${tinhHinh} (${progressG}/${maxG} dây)
-📦 Sản lượng: ${baoTau} bao lớn (≈ ${baoChuanX} bao tính tiền)
-💰 Giá: ${giaK}k
+📅 Ngày: ${fmtDayVN(workDate)}
+📍 Đám: ${damU} (${cfg?.loaiLuoi || "Lưới Nhà Máy"})
+✂️ Tình hình: ${tinhHinh} (${newProgress}/${max} dây)
+📦 Sản lượng: ${parsed.b} bao lớn (≈ ${bc} bao chuẩn)
+💰 Giá: ${parsed.k}k
 
 💵 THU HÔM NAY: ${Number(won).toLocaleString()} ₩
-🏆 TỔNG THU TỚI THỜI ĐIỂM NÀY: ${moneyToTrieu(totalToNow)} ₩
-----------------------------------
-${forecast ? `(Dự báo nhanh: Bãi này sẽ cắt lại vào ${forecast})` : ""}`.trim();
+🏆 TỔNG THU VỤ NÀY: ${moneyToTrieu(totalToNow)} ₩
+----------------------------------${thuocNote}
+${forecast ? `\n(Dự kiến cắt lại: ${forecast})` : ""}`.trim();
 
   await send(chatId, text, { reply_markup: buildMainKeyboard() });
 }
 
-/* ================== CONFIRM DELETE STATE (2525) ================== */
-const pendingConfirm = new Map();
-/**
- * pendingConfirm.set(chatId, { action: "RESET"|"DEL_LAST", expiresAt })
- */
-function setPending(chatId, action) {
-  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 phút
-  pendingConfirm.set(String(chatId), { action, expiresAt });
-}
-function getPending(chatId) {
-  const p = pendingConfirm.get(String(chatId));
-  if (!p) return null;
-  if (Date.now() > p.expiresAt) {
-    pendingConfirm.delete(String(chatId));
-    return null;
-  }
-  return p;
-}
-function clearPending(chatId) {
-  pendingConfirm.delete(String(chatId));
+/* ================== CÁC HÀM XỬ LÝ SỰ KIỆN KỸ THUẬT ================== */
+
+async function recordHaThuy(dateObj, chatId, userName) {
+  const dateYmd = ymd(dateObj);
+  await appendSeasonDataRow([
+    new Date().toISOString(),
+    dateYmd,
+    userName,
+    "TOÀN TÀU",
+    0,
+    0,
+    "Hạ thủy",
+    0,
+    0,
+    0,
+    0,
+    `Tàu hạ thủy xuất bến vụ mùa ${getSeasonDisplay()}`,
+  ]);
+
+  const text =
+`🚢 [VỤ MÙA ${getSeasonDisplay()}] ĐÃ GHI NHẬN TÀU HẠ THỦY!
+📅 Ngày: ${fmtDayVN(dateObj)}
+Chúc đội tàu một vụ mùa bội thu, thuận buồm xuôi gió! 🌊⚓`;
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
 }
 
-/* ================== FIND / EDIT / DELETE ================== */
+async function recordThaLuoi(dam, loaiLuoi, soDay, dateObj, chatId, userName) {
+  const damU = dam.toUpperCase();
+  const dateYmd = ymd(dateObj);
+
+  await upsertDamConfig(damU, {
+    loaiLuoi,
+    soDay,
+    ngayTha: dateYmd,
+  });
+
+  await appendSeasonDataRow([
+    new Date().toISOString(),
+    dateYmd,
+    userName,
+    damU,
+    0,
+    soDay,
+    "Thả lưới",
+    0,
+    0,
+    0,
+    0,
+    `Thả ${loaiLuoi} (${soDay} dây)`,
+  ]);
+
+  const text =
+`⚓ ĐÃ GHI NHẬN THẢ LƯỚI
+[Vụ mùa: ${getSeasonDisplay()}]
+📍 Đám: ${damU}
+🕸️ Loại lưới: ${loaiLuoi}
+📏 Quy mô: ${soDay} dây
+📅 Ngày thả: ${fmtDayVN(dateObj)}`;
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
+}
+
+async function recordTachLuoi(dam, dateObj, chatId, userName) {
+  const damU = dam.toUpperCase();
+  const dateYmd = ymd(dateObj);
+  const cfg = DAMS_CONFIG[damU] || {};
+
+  let kcNgay = "";
+  if (cfg.ngayTha) {
+    const kc = diffDays(cfg.ngayTha, dateYmd);
+    kcNgay = `Sau ${kc} ngày kể từ khi thả lưới (${cfg.ngayTha})`;
+  }
+
+  await upsertDamConfig(damU, { ngayTach: dateYmd });
+
+  await appendSeasonDataRow([
+    new Date().toISOString(),
+    dateYmd,
+    userName,
+    damU,
+    0,
+    cfg.soDay || 0,
+    "Tách lưới",
+    0,
+    0,
+    0,
+    0,
+    kcNgay || "Tách lưới",
+  ]);
+
+  const text =
+`🕸️ ĐÃ GHI NHẬN TÁCH LƯỚI
+📍 Đám: ${damU} (${cfg.loaiLuoi || "Lưới Tự Nhiên"})
+📅 Ngày tách: ${fmtDayVN(dateObj)}
+${kcNgay ? `⏱️ Thời gian: ${kcNgay}` : ""}`.trim();
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
+}
+
+async function recordDiThuoc(damList, dateObj, chatId, userName) {
+  const dateYmd = ymd(dateObj);
+  const reportItems = [];
+
+  for (const dam of damList) {
+    const damU = dam.toUpperCase();
+    const cfg = DAMS_CONFIG[damU] || {};
+    let kcMsg = "";
+
+    if (cfg.ngayThuocCuoi) {
+      const kc = diffDays(cfg.ngayThuocCuoi, dateYmd);
+      kcMsg = `Cách lần trước ${kc} ngày (lần trước: ${cfg.ngayThuocCuoi})`;
+    } else if (cfg.ngayTha) {
+      const kc = diffDays(cfg.ngayTha, dateYmd);
+      kcMsg = `Đi thuốc lần đầu (sau thả ${kc} ngày)`;
+    } else {
+      kcMsg = "Ghi nhận đi thuốc";
+    }
+
+    await upsertDamConfig(damU, { ngayThuocCuoi: dateYmd });
+
+    await appendSeasonDataRow([
+      new Date().toISOString(),
+      dateYmd,
+      userName,
+      damU,
+      0,
+      cfg.soDay || 0,
+      "Đi thuốc",
+      0,
+      0,
+      0,
+      0,
+      kcMsg,
+    ]);
+
+    reportItems.push(`• Đám ${damU} (${cfg.loaiLuoi || "Lưới"}): ${kcMsg}`);
+  }
+
+  const text =
+`💊 ĐÃ GHI NHẬN ĐI THUỐC
+📅 Ngày: ${fmtDayVN(dateObj)}
+${reportItems.join("\n")}`;
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
+}
+
+async function recordNghiBien(type, days, dateObj, chatId, userName) {
+  const dateYmd = ymd(dateObj);
+  let title = "Tránh bão";
+  let desc = `Nghỉ tránh bão biển (${days} ngày)`;
+
+  if (type === "GIO") {
+    title = "Nghỉ gió";
+    desc = "Nghỉ gió to biển động";
+  } else if (type === "BO") {
+    title = "Làm bờ";
+    desc = "Làm công việc bờ";
+  }
+
+  await appendSeasonDataRow([
+    new Date().toISOString(),
+    dateYmd,
+    userName,
+    "TOÀN TÀU",
+    0,
+    0,
+    title,
+    0,
+    0,
+    0,
+    0,
+    desc,
+  ]);
+
+  let text = "";
+  if (type === "BAO") {
+    text =
+`🌀 ĐÃ GHI NHẬN NGHỈ TRÁNH BÃO
+📅 Ngày: ${fmtDayVN(dateObj)}
+Thời gian: ${days} ngày nghỉ bão.
+Đã tính vào ngày nghỉ của tháng (lịch cắt kim giữ nguyên theo quy tắc).`;
+  } else if (type === "GIO") {
+    text = `💨 ĐÃ GHI NHẬN: Nghỉ gió to biển động (${fmtDayVN(dateObj)})`;
+  } else {
+    text = `⚓ ĐÃ GHI NHẬN: Làm bờ (${fmtDayVN(dateObj)})`;
+  }
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
+}
+
+/* ================== MENU INLINE BUTTONS (1 CHẠM - KHÔNG CẦN GÕ) ================== */
+
+async function showThuocMenu(chatId) {
+  const dams = Object.keys(DAMS_CONFIG).sort();
+  const inline_keyboard = [];
+
+  // Tạo hàng nút cho từng đám
+  for (let i = 0; i < dams.length; i += 2) {
+    const row = [
+      { text: `💊 Đám ${dams[i]}`, callback_data: `THUOC:${dams[i]}` },
+    ];
+    if (dams[i + 1]) {
+      row.push({
+        text: `💊 Đám ${dams[i + 1]}`,
+        callback_data: `THUOC:${dams[i + 1]}`,
+      });
+    }
+    inline_keyboard.push(row);
+  }
+
+  if (dams.length > 1) {
+    inline_keyboard.push([
+      { text: "💊 Đi thuốc TẤT CẢ các đám hôm nay", callback_data: "THUOC:ALL" },
+    ]);
+  }
+
+  const text =
+`💊 GHI NHẬN ĐI THUỐC (1 CHẠM)
+Chọn đám bạn vừa đi thuốc hôm nay:
+(Hoặc gõ: "thuoc A 28/10" nếu muốn ghi ngày khác)`;
+
+  await send(chatId, text, {
+    reply_markup: inline_keyboard.length ? { inline_keyboard } : undefined,
+  });
+}
+
+async function showTachLuoiMenu(chatId) {
+  const dams = Object.keys(DAMS_CONFIG).sort();
+  const inline_keyboard = [];
+
+  for (let i = 0; i < dams.length; i += 2) {
+    const row = [
+      { text: `🕸️ Đám ${dams[i]}`, callback_data: `TACH:${dams[i]}` },
+    ];
+    if (dams[i + 1]) {
+      row.push({
+        text: `🕸️ Đám ${dams[i + 1]}`,
+        callback_data: `TACH:${dams[i + 1]}`,
+      });
+    }
+    inline_keyboard.push(row);
+  }
+
+  const text =
+`🕸️ GHI NHẬN TÁCH LƯỚI (1 CHẠM)
+Chọn đám bạn vừa tách lưới hôm nay:
+(Hoặc gõ: "tach luoi A 25d" nếu muốn ghi ngày khác)`;
+
+  await send(chatId, text, {
+    reply_markup: inline_keyboard.length ? { inline_keyboard } : undefined,
+  });
+}
+
+async function showNghiBienMenu(chatId) {
+  const inline_keyboard = [
+    [
+      { text: "🌀 Tránh bão 1 ngày", callback_data: "NGHI:BAO:1" },
+      { text: "🌀 Tránh bão 2 ngày", callback_data: "NGHI:BAO:2" },
+      { text: "🌀 Tránh bão 3 ngày", callback_data: "NGHI:BAO:3" },
+    ],
+    [
+      { text: "💨 Nghỉ gió to", callback_data: "NGHI:GIO:1" },
+      { text: "⚓ Làm việc bờ", callback_data: "NGHI:BO:1" },
+    ],
+  ];
+
+  const text =
+`🌊 GHI NHẬN NGHỈ BIỂN (1 CHẠM)
+Chọn tình hình hôm nay:
+(Tránh bão được tính vào ngày nghỉ của tháng, không làm lệch lịch cắt kim)`;
+
+  await send(chatId, text, { reply_markup: { inline_keyboard } });
+}
+
+async function showHaThuyMenu(chatId) {
+  const inline_keyboard = [
+    [{ text: "🚢 Tàu Hạ Thủy Hôm Nay", callback_data: "HATHUY:TODAY" }],
+    [
+      { text: "⚓ Thả Đám A (Nhà Máy 180d)", callback_data: "THA:A:NM" },
+      { text: "⚓ Thả Đám B (Nhà Máy 180d)", callback_data: "THA:B:NM" },
+    ],
+    [
+      { text: "⚓ Thả Đám C (Nhà Máy 180d)", callback_data: "THA:C:NM" },
+      { text: "⚓ Thả Đám D (Nhà Máy 180d)", callback_data: "THA:D:NM" },
+    ],
+  ];
+
+  const text =
+`🚢 MỐC HẠ THỦY & THẢ LƯỚI
+Bấm nút bên dưới để ghi nhận ngay hôm nay:
+(Hoặc gõ: "tha luoi B tn 70" nếu là lưới tự nhiên / sò)`;
+
+  await send(chatId, text, { reply_markup: { inline_keyboard } });
+}
+
+async function showAddDamMenu(chatId) {
+  const inline_keyboard = [
+    [
+      { text: "➕ Thêm Đám A (180d)", callback_data: "ADD_DAM:A:180" },
+      { text: "➕ Thêm Đám B (180d)", callback_data: "ADD_DAM:B:180" },
+    ],
+    [
+      { text: "➕ Thêm Đám C (180d)", callback_data: "ADD_DAM:C:180" },
+      { text: "➕ Thêm Đám D (180d)", callback_data: "ADD_DAM:D:180" },
+    ],
+    [
+      { text: "➕ Thêm Đám E (180d)", callback_data: "ADD_DAM:E:180" },
+      { text: "➕ Thêm Đám F (180d)", callback_data: "ADD_DAM:F:180" },
+    ],
+  ];
+
+  const text =
+`⚙️ THÊM / CÀI ĐẶT ĐÁM
+• Bấm nút trên để tạo nhanh đám Nhà Máy 180 dây.
+• Hoặc gõ lệnh:
+  them dam <Tên> <Loại: nm/tn/so> [SốDây]
+  Ví dụ: them dam B tn 75 (Lưới tự nhiên 75 dây)
+  Ví dụ: sua day A 185 (Sửa số dây)`;
+
+  await send(chatId, text, { reply_markup: { inline_keyboard } });
+}
+
+/* ================== THỐNG KÊ & BÁO CÁO ================== */
+async function reportAllDamsStatus(chatId) {
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
+  const dams = Object.keys(DAMS_CONFIG);
+
+  if (!dams.length) {
+    await send(
+      chatId,
+      `📋 Chưa có đám nào được thiết lập trong Vụ mùa ${getSeasonDisplay()}.\nBấm "➕ Thêm/Sửa Đám & Lưới" để tạo đám nhanh nhé!`,
+      { reply_markup: buildMainKeyboard() }
+    );
+    return;
+  }
+
+  const haThuyRow = objs.find((o) => o.tinhHinh === "Hạ thủy");
+  let haThuyText = "";
+  if (haThuyRow) {
+    const kc = diffDays(haThuyRow.date, ymd(kst()));
+    haThuyText = `🚢 Tàu hạ thủy: ${haThuyRow.date} (được ${kc} ngày)\n\n`;
+  }
+
+  let text = `🌊 TÌNH HÌNH CÁC ĐÁM - VỤ MÙA ${getSeasonDisplay()}\n${haThuyText}`;
+
+  for (const dam of dams.sort()) {
+    const cfg = DAMS_CONFIG[dam];
+    const st = computeBaiState(objs, dam);
+
+    text += `📍 Đám ${dam} [${cfg.loaiLuoi} - ${cfg.soDay} dây]:\n`;
+
+    if (cfg.ngayTha) {
+      const kcTha = diffDays(cfg.ngayTha, ymd(kst()));
+      text += `  • Thả lưới: ${cfg.ngayTha} (${kcTha} ngày trước)\n`;
+    } else {
+      text += `  • Thả lưới: Chưa ghi nhận\n`;
+    }
+
+    if (cfg.ngayTach) {
+      text += `  • Tách lưới: ${cfg.ngayTach}\n`;
+    } else {
+      text += `  • Tách lưới: Chưa tách\n`;
+    }
+
+    if (cfg.ngayThuocCuoi) {
+      const kcThuoc = diffDays(cfg.ngayThuocCuoi, ymd(kst()));
+      text += `  • Đi thuốc lần cuối: ${cfg.ngayThuocCuoi} (${kcThuoc} ngày trước)\n`;
+    } else {
+      text += `  • Đi thuốc: Chưa đi thuốc\n`;
+    }
+
+    if (st.cleanDone > 0 || st.progress > 0) {
+      text += `  • Thu hoạch: Đang ở VÒNG ${st.currentVong} (${st.progress}/${st.max} dây)\n`;
+      if (st.lastCleanDate) {
+        const fc = addDaysYmd(st.lastCleanDate, CUT_INTERVAL_DAYS);
+        text += `    ⤷ Dự kiến cắt lại: ${fc}\n`;
+      }
+    } else {
+      text += `  • Thu hoạch: Chưa cắt đợt nào\n`;
+    }
+    text += "\n";
+  }
+
+  const inline_keyboard = [
+    [
+      { text: "💊 Đi thuốc nhanh", callback_data: "SHOW:THUOC_MENU" },
+      { text: "🕸️ Tách lưới nhanh", callback_data: "SHOW:TACH_MENU" },
+    ],
+    [
+      { text: "📆 Xem lịch cắt", callback_data: "SHOW:CUT_SCHEDULE" },
+      { text: "🔄 Làm mới", callback_data: "SHOW:STATUS_MENU" },
+    ],
+  ];
+
+  await send(chatId, text.trim(), {
+    reply_markup: { inline_keyboard },
+  });
+}
+
+async function reportCutSchedule(chatId) {
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
+  const dams = Object.keys(MAX_DAY);
+
+  if (!dams.length) {
+    await send(chatId, "📆 Chưa có dữ liệu đám/bãi nào.", {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
+
+  const items = [];
+  for (const dam of dams) {
+    const st = computeBaiState(objs, dam);
+    const forecast = st.lastCleanDate
+      ? addDaysYmd(st.lastCleanDate, CUT_INTERVAL_DAYS)
+      : "";
+
+    if (!forecast) {
+      items.push({ dam, forecast: "", sortKey: Infinity });
+    } else {
+      const [dd, mm, yyyy] = forecast.split("/");
+      const t = new Date(`${yyyy}-${mm}-${dd}T00:00:00Z`).getTime();
+      items.push({ dam, forecast, sortKey: t });
+    }
+  }
+
+  items.sort((a, b) => a.sortKey - b.sortKey);
+
+  let out = `📆 LỊCH CẮT DỰ KIẾN CÁC ĐÁM\n(Theo lần CẮT SẠCH gần nhất + ${CUT_INTERVAL_DAYS} ngày)\n`;
+  for (const it of items) {
+    const cfg = DAMS_CONFIG[it.dam];
+    const loai = cfg?.loaiLuoi ? ` (${cfg.loaiLuoi})` : "";
+    if (!it.forecast) {
+      out += `\n• Đám ${it.dam}${loai}: (Chưa có dữ liệu cắt sạch)`;
+    } else {
+      out += `\n• Đám ${it.dam}${loai}: ➡️ ${it.forecast}`;
+    }
+  }
+
+  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
+}
+
+async function reportMonth(chatId) {
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
+
+  const now = kst();
+  const monthKey = `${now.getUTCFullYear()}-${String(
+    now.getUTCMonth() + 1
+  ).padStart(2, "0")}`;
+
+  const workDays = new Set();
+  const stormDays = new Set();
+  const windDays = new Set();
+  const shoreDays = new Set();
+  let totalWon = 0;
+  let totalBao = 0;
+
+  for (const o of objs) {
+    if (!o.date || o.date.slice(0, 7) !== monthKey) continue;
+
+    if (o.won > 0) {
+      workDays.add(o.date);
+      totalWon += o.won;
+      totalBao += o.baoTau;
+    } else {
+      const t = (o.tinhHinh || "").toLowerCase();
+      if (t.includes("bão") || t.includes("bao")) stormDays.add(o.date);
+      else if (t.includes("nghỉ gió") || t.includes("gio")) windDays.add(o.date);
+      else if (t.includes("làm bờ") || t.includes("bo")) shoreDays.add(o.date);
+    }
+  }
+
+  const text =
+`📅 THỐNG KÊ THÁNG ${monthKey}
+[Vụ mùa: ${getSeasonDisplay()}]
+
+• Số ngày đi làm: ${workDays.size} ngày
+• Tránh bão: ${stormDays.size} ngày
+• Nghỉ gió: ${windDays.size} ngày
+• Làm bờ: ${shoreDays.size} ngày
+----------------------------------
+📦 Tổng sản lượng: ${totalBao} bao lớn (≈ ${baoChuan(totalBao)} bao chuẩn)
+💵 Doanh thu tháng: ${Number(totalWon).toLocaleString()} ₩ (${moneyToTrieu(totalWon)})`.trim();
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
+}
+
+async function reportByVong(chatId) {
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
+  const withV = assignVongAll(objs);
+
+  const sumByV = new Map();
+  const sumByBaiV = new Map();
+
+  for (const o of withV) {
+    if (!isWorkRow(o) || o.vong <= 0) continue;
+    sumByV.set(o.vong, (sumByV.get(o.vong) || 0) + (o.won || 0));
+    const key = `${o.bai}|${o.vong}`;
+    sumByBaiV.set(key, (sumByBaiV.get(key) || 0) + (o.won || 0));
+  }
+
+  const vongs = [...sumByV.entries()].sort((a, b) => a[0] - b[0]);
+  let out = `🔁 THỐNG KÊ THEO VÒNG [Vụ: ${getSeasonDisplay()}]\n`;
+  if (!vongs.length) out += "\n(Chưa có dữ liệu thu hoạch)";
+  for (const [v, won] of vongs) {
+    out += `\n• Vòng ${v}: ${Number(won).toLocaleString()} ₩ (${moneyToTrieu(won)})`;
+  }
+
+  out += "\n\nChi tiết theo từng đám:";
+  const list = [...sumByBaiV.entries()]
+    .map(([k, won]) => {
+      const [bai, v] = k.split("|");
+      return { bai, vong: Number(v), won };
+    })
+    .sort((a, b) => (a.bai + a.vong).localeCompare(b.bai + b.vong));
+
+  if (!list.length) out += "\n(Chưa có dữ liệu)";
+  for (const it of list) {
+    out += `\n- Đám ${it.bai}: V${it.vong}: ${Number(it.won).toLocaleString()} ₩`;
+  }
+
+  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
+}
+
+async function reportSeasonTotal(chatId) {
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
+
+  let totalWon = 0;
+  let totalBao = 0;
+
+  for (const o of objs) {
+    if (o.won > 0) {
+      totalWon += o.won;
+      totalBao += o.baoTau;
+    }
+  }
+
+  const legacyRows = await getLegacyDataRows();
+  const legacyWon = legacyRows.reduce((s, r) => s + (Number(r?.[10]) || 0), 0);
+
+  const text =
+`💰 TỔNG THU HOẠCH VỤ MÙA ${getSeasonDisplay()}
+• Tổng số bao lớn: ${totalBao.toLocaleString()} bao
+• Tổng số bao chuẩn: ${baoChuan(totalBao).toLocaleString()} bao
+• TỔNG THU NHẬP: ${totalWon.toLocaleString()} ₩ (${moneyToTrieu(totalWon)})
+----------------------------------
+📂 Doanh thu Vụ cũ (năm ngoái): ${legacyWon.toLocaleString()} ₩ (${moneyToTrieu(legacyWon)})
+(Bấm nút "📂 XEM DỮ LIỆU VỤ CŨ" để xem chi tiết lịch sử năm ngoái)`.trim();
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
+}
+
+async function reportCommandList(chatId) {
+  const rows = await getSeasonDataRows();
+  const objs = rows
+    .map(rowToObj)
+    .filter((o) => o.bai && o.baoTau > 0 && o.giaK > 0 && o.won > 0);
+
+  if (!objs.length) {
+    const legacyRows = await getLegacyDataRows();
+    const legacyObjs = legacyRows
+      .map(rowToObj)
+      .filter((o) => o.bai && o.baoTau > 0 && o.giaK > 0 && o.won > 0);
+
+    let out = `📋 Vụ mùa mới ${getSeasonDisplay()} chưa có lệnh cắt nào.\n\n📂 10 LỆNH GẦN NHẤT TỪ VỤ CŨ (TAB DATA):\n`;
+    legacyObjs.slice(-10).forEach((o) => {
+      out += `• ${o.date}: ${o.bai} ${o.baoTau}b ${o.giaK}k (${o.tinhHinh})\n`;
+    });
+    out += `\n(Bấm nút "📂 XEM DỮ LIỆU VỤ CŨ" để xem toàn bộ danh sách năm ngoái)`;
+
+    await send(chatId, out.trim(), {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
+
+  let out = `📋 DANH SÁCH LỆNH CẮT ĐÃ GỬI [Vụ ${getSeasonDisplay()}]:\n\n`;
+  objs.slice(-30).forEach((o) => {
+    out += `• ${o.date}: ${o.bai} ${o.baoTau}b ${o.giaK}k (${o.tinhHinh})\n`;
+  });
+
+  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
+}
+
+async function sendHelp(chatId) {
+  const text =
+`ℹ️ HƯỚNG DẪN SỬ DỤNG SỔ KIM (VỤ MÙA ${getSeasonDisplay()})
+
+💡 Mẹo: Hầu hết chức năng (Đi thuốc, Tách lưới, Tránh bão, Hạ thủy, Xóa) bạn chỉ cần BẤM NÚT TRÊN MÀN HÌNH là xong, không cần gõ lệnh!
+
+1. KHI CẮT KIM (THU HOẠCH):
+• Cắt sạch: A 60b 220k
+• Cắt dỡ: A 30g 40b 220k
+• Ghi bù ngày: A 60b 220k 15d
+• Nhiều đám 1 lúc: A B 100b 250k
+• Cắt tiếp đợt trước: Tiep A B 90b 320k
+
+2. QUẢN LÝ ĐÁM:
+• them dam <Tên> <Loại: nm/tn/so> [SốDây]
+• sua day <Tên> <SốDâyMới>
+• sua <cú pháp mới> (Sửa dòng cắt gần nhất)
+• Xóa: Bấm nút "Xóa dòng gần nhất" và chọn nút Xác nhận.`.trim();
+
+  await send(chatId, text, { reply_markup: buildMainKeyboard() });
+}
+
+/* ================== QUẢN LÝ DELETE ================== */
 function findLastRowIndexAny(rows) {
   for (let i = rows.length - 1; i >= 0; i--) {
     const o = rowToObj(rows[i]);
@@ -849,307 +1567,108 @@ function findLastWorkRowIndexForUserAndBai(rows, userName, bai) {
   return null;
 }
 
-/* ================== MENU ACTIONS ================== */
-function currentMonthKeyKST() {
-  const now = kst();
-  const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
-}
-function rowMonthKey(o) {
-  if (!o?.date || o.date.length < 7) return "";
-  return o.date.slice(0, 7);
-}
+/* ================== XỬ LÝ CALLBACK QUERY (KHI NGƯỜI DÙNG BẤM NÚT INLINE) ================== */
+async function handleCallbackQuery(cb) {
+  const chatId = cb.message?.chat?.id;
+  const data = cb.data || "";
+  const userName = cb.from?.first_name || "Bạn";
 
-async function reportMonth(chatId) {
-  const rows = await getRows();
-  const objs = rows.map(rowToObj);
-  const monthKey = currentMonthKeyKST();
+  await tg("answerCallbackQuery", {
+    callback_query_id: cb.id,
+    text: "⚡ Đang xử lý...",
+  });
 
-  const workDays = new Set();
-  const windDays = new Set();
-  const shoreDays = new Set();
-  let totalWon = 0;
+  if (!chatId) return;
 
-  for (const o of objs) {
-    if (rowMonthKey(o) !== monthKey) continue;
-
-    if (o.won > 0) {
-      workDays.add(o.date);
-      totalWon += o.won;
+  // Đi thuốc
+  if (data.startsWith("THUOC:")) {
+    const target = data.split(":")[1];
+    if (target === "ALL") {
+      const allDams = Object.keys(DAMS_CONFIG);
+      await recordDiThuoc(allDams, kst(), chatId, userName);
     } else {
-      const t = (o.tinhHinh || "").toLowerCase();
-      if (t.includes("nghỉ gió")) windDays.add(o.date);
-      if (t.includes("làm bờ") || t.includes("lam bo")) shoreDays.add(o.date);
+      await recordDiThuoc([target], kst(), chatId, userName);
     }
+    return;
   }
 
-  const text =
-`📅 THỐNG KÊ THÁNG ${monthKey}
-• Số ngày làm: ${workDays.size}
-• Nghỉ gió: ${windDays.size} ngày
-• Làm bờ: ${shoreDays.size} ngày
-• Tổng doanh thu tháng: ${Number(totalWon).toLocaleString()} ₩`.trim();
-
-  await send(chatId, text, { reply_markup: buildMainKeyboard() });
-}
-
-async function reportByBai(chatId) {
-  const rows = await getRows();
-  const objs = rows.map(rowToObj);
-
-  const map = new Map(); // bai -> agg
-  for (const o of objs) {
-    if (!isWorkRow(o)) continue;
-    const cur = map.get(o.bai) || { baoTau: 0, baoChuan: 0, won: 0, lastCleanDate: "" };
-    cur.baoTau += o.baoTau || 0;
-    cur.baoChuan += o.baoChuan || 0;
-    cur.won += o.won || 0;
-    if (isCleanRow(o)) cur.lastCleanDate = o.date || cur.lastCleanDate;
-    map.set(o.bai, cur);
+  // Tách lưới
+  if (data.startsWith("TACH:")) {
+    const dam = data.split(":")[1];
+    await recordTachLuoi(dam, kst(), chatId, userName);
+    return;
   }
 
-  const items = [...map.entries()].sort((a, b) => (b[1].won || 0) - (a[1].won || 0));
-
-  let out = "📍 THỐNG KÊ THEO BÃI (tổng từ DATA)\n";
-  for (const [bai, v] of items) {
-    const forecast = v.lastCleanDate ? addDaysYmd(v.lastCleanDate, CUT_INTERVAL_DAYS) : "";
-    out += `\n• ${bai}: ${v.baoTau} bao | ≈ ${v.baoChuan} chuẩn | ${Number(v.won).toLocaleString()} ₩`;
-    if (forecast) out += `\n  ⤷ Dự báo cắt lại: ${forecast}`;
+  // Nghỉ biển
+  if (data.startsWith("NGHI:")) {
+    const parts = data.split(":");
+    const type = parts[1]; // BAO / GIO / BO
+    const days = Number(parts[2] || 1);
+    await recordNghiBien(type, days, kst(), chatId, userName);
+    return;
   }
 
-  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
-}
-
-/**
- * ✅ THỐNG KÊ THEO VÒNG:
- * - Vòng của mỗi dòng = cleanDoneBefore + 1
- * - Cộng tiền theo Vòng, bao gồm cả "cắt dỡ" (₩úng chốt mới)
- */
-async function reportByVong(chatId) {
-  const rows = await getRows();
-  const objs = rows.map(rowToObj);
-  const withV = assignVongAll(objs);
-
-  const sumByV = new Map(); // vong -> won
-  const sumByBaiV = new Map(); // bai|vong -> won
-
-  for (const o of withV) {
-    if (!isWorkRow(o) || o.vong <= 0) continue;
-
-    sumByV.set(o.vong, (sumByV.get(o.vong) || 0) + (o.won || 0));
-
-    const key = `${o.bai}|${o.vong}`;
-    sumByBaiV.set(key, (sumByBaiV.get(key) || 0) + (o.won || 0));
+  // Hạ thủy
+  if (data === "HATHUY:TODAY") {
+    await recordHaThuy(kst(), chatId, userName);
+    return;
   }
 
-  const vongs = [...sumByV.entries()].sort((a, b) => a[0] - b[0]).slice(0, 50);
-
-  let out = "🔁 THỐNG KÊ THEO VÒNG (cộng tất cả lệnh thuộc vòng của mỗi bãi)\n";
-  if (!vongs.length) out += "\n(Chưa có dữ liệu)";
-  for (const [v, won] of vongs) {
-    out += `\n• Vòng ${v}: ${Number(won).toLocaleString()} ₩`;
+  // Thả lưới nhanh
+  if (data.startsWith("THA:")) {
+    const parts = data.split(":");
+    const dam = parts[1];
+    await recordThaLuoi(dam, "Lưới Nhà Máy", DEFAULT_NHA_MAY_DAY, kst(), chatId, userName);
+    return;
   }
 
-  out += "\n\nTheo từng bãi:";
-  const list = [...sumByBaiV.entries()]
-    .map(([k, won]) => {
-      const [bai, v] = k.split("|");
-      return { bai, vong: Number(v), won };
-    })
-    .sort((a, b) => (a.bai + a.vong).localeCompare(b.bai + b.vong));
-
-  if (!list.length) out += "\n(Chưa có dữ liệu)";
-  for (const it of list) {
-    out += `\n- ${it.bai}: V${it.vong}: ${Number(it.won).toLocaleString()} ₩`;
-  }
-
-  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
-}
-
-/**
- * 📆 LỊCH CẮT CÁC BÃI:
- * - theo lần CẮT SẠCH gần nhất + CUT_INTERVAL_DAYS
- * - sort ngày gần -> xa
- */
-async function reportCutSchedule(chatId) {
-  const rows = await getRows();
-  const objs = rows.map(rowToObj);
-
-  const items = [];
-  for (const bai of Object.keys(MAX_DAY)) {
-    const st = computeBaiState(objs, bai);
-    const forecast = forecastForBai(st); // dd/mm/yyyy hoặc ""
-    if (!forecast) {
-      items.push({ bai, forecast: "", sortKey: Infinity });
-    } else {
-      // parse dd/mm/yyyy to epoch for sorting
-      const [dd, mm, yyyy] = forecast.split("/");
-      const t = new Date(`${yyyy}-${mm}-${dd}T00:00:00`).getTime();
-      items.push({ bai, forecast, sortKey: t });
-    }
-  }
-
-  items.sort((a, b) => a.sortKey - b.sortKey);
-
-  let out = `📆 LỊCH CẮT DỰ KIẾN (tất cả bãi)\n(Theo lần CẮT SẠCH gần nhất + ${CUT_INTERVAL_DAYS} ngày)\n`;
-  for (const it of items) {
-    if (!it.forecast) out += `\n• ${it.bai}: (chưa có dữ liệu cắt sạch)`;
-    else out += `\n• ${it.bai}: ${it.forecast}`;
-  }
-
-  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
-}
-
-/* ================== MAIN LOGIC: BUILD WORK ROW WITH PROGRESS ================== */
-/**
- * Rule:
- * - Nếu gDelta thiếu => progress = max => Cắt sạch
- * - Nếu có gDelta => progress = prevProgress + gDelta (nếu prevProgress=0 sau clean)
- *   + nếu progress >= max => progress=max => Cắt sạch
- *   + else => Cắt dỡ
- */
-function buildWorkProgress({ allObjs, bai, gDelta }) {
-  const max = MAX_DAY[bai];
-  const st = computeBaiState(allObjs, bai);
-
-  // st.progress là progress hiện tại (nếu ₩ang cắt dỡ), hoặc 0 nếu vừa sạch
-  let newProgress;
-  let tinhHinh;
-
-  if (!gDelta) {
-    newProgress = max;
-    tinhHinh = "Cắt sạch";
-  } else {
-    newProgress = Math.min(max, Number(st.progress || 0) + Number(gDelta));
-    tinhHinh = newProgress >= max ? "Cắt sạch" : "Cắt dỡ";
-  }
-
-  const vong = st.currentVong; // vòng hiện tại (cleanDone+1)
-  // nếu lần này clean thì vẫn hiển thị vòng hiện tại (₩úng yêu cầu)
-  // sau ₩ó vòng sẽ tăng cho lần tiếp theo.
-
-  return { max, newProgress, tinhHinh, vong };
-}
-/* ================== 📋 DANH SÁCH LỆNH ĐÃ GỬI ================== */
-async function reportCommandList(chatId) {
-  const rows = await getRows();
-
-  const objs = rows
-    .map(rowToObj)
-    .filter(
-      (o) =>
-        o.bai &&
-        o.baoTau > 0 &&
-        o.giaK > 0 &&
-        o.won > 0
+  // Thêm đám nhanh
+  if (data.startsWith("ADD_DAM:")) {
+    const parts = data.split(":");
+    const dam = parts[1];
+    const soDay = Number(parts[2] || 180);
+    await upsertDamConfig(dam, { loaiLuoi: "Lưới Nhà Máy", soDay });
+    await send(
+      chatId,
+      `✅ Đã tạo Đám ${dam} (Lưới Nhà Máy - ${soDay} dây).`,
+      { reply_markup: buildMainKeyboard() }
     );
+    return;
+  }
 
-  if (!objs.length) {
-    await send(chatId, "📋 Chưa có lệnh WORK nào.", {
+  // Xóa dòng gần nhất
+  if (data === "CONFIRM_DEL_LAST") {
+    const rows = await getSeasonDataRows();
+    const idx = findLastRowIndexAny(rows);
+    if (!idx) {
+      await send(chatId, "⚠️ Không có dữ liệu để xóa.", {
+        reply_markup: buildMainKeyboard(),
+      });
+      return;
+    }
+    await clearSeasonDataRow(idx);
+    await send(chatId, "✅ Đã xóa dòng gần nhất thành công.", {
       reply_markup: buildMainKeyboard(),
     });
     return;
   }
 
-  let out = "📋 DANH SÁCH LỆNH ĐÃ CHỐT:\n\n";
-  objs.forEach((o) => {
-    out += `${o.bai} ${o.baoTau}b ${o.giaK}k\n`;
-  });
+  if (data === "CANCEL_ACTION") {
+    await send(chatId, "❌ Đã hủy thao tác.", {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
 
-  await send(chatId, out.trim(), { reply_markup: buildMainKeyboard() });
+  // Menu redirects
+  if (data === "SHOW:THUOC_MENU") return showThuocMenu(chatId);
+  if (data === "SHOW:TACH_MENU") return showTachLuoiMenu(chatId);
+  if (data === "SHOW:CUT_SCHEDULE") return reportCutSchedule(chatId);
+  if (data === "SHOW:STATUS_MENU") return reportAllDamsStatus(chatId);
+  if (data === "SHOW:LEGACY_SEASON") return reportLegacySeason(chatId);
 }
 
-/* ================== MAIN HANDLER ================== */
-
-
-async function sendMultiSummary({ chatId, userName, dateYmd, bais, totalWon, k, totalBao }) {
-  const day = dateYmd;
-  const fmtWon = Number(totalWon || 0).toLocaleString("vi-VN");
-  const fmtBao = Number(totalBao || 0).toLocaleString("vi-VN");
-
-  const text = [
-    "Chào Dòng Đời, đây là kết quả của lệnh bạn gửi cho các bãi:",
-    "",
-    `📅 Ngày: ${day}`,
-    `📍 Vị trí: ${bais.join(" ")}`,
-    "✂️ Tình hình: Cắt",
-    `📦 Sản lượng: ${fmtBao} bao`,
-    `💰 Giá: ${k}k`,
-    "",
-    `💵 THU HÔM NAY: ${fmtWon}₩`,
-  ].join("\n");
-
-  await send(chatId, text, { reply_markup: buildMainKeyboard() });
-}
-
-async function processWorkEntry(parsed, chatId, userName) {
-const nowKST = kst();
-const workDate = parsed.dayInMonth
-  ? new Date(nowKST.getFullYear(), nowKST.getMonth(), parsed.dayInMonth)
-  : new Date(nowKST.getTime() - 86400000);
-
-const dateYmd = ymd(workDate);
-
-const rows = await getRows();
-const objs = rows.map(rowToObj);
-
-const { max, newProgress, tinhHinh, vong } = buildWorkProgress({
-  allObjs: objs,
-  bai: parsed.bai,
-  gDelta: parsed.gDelta,
-});
-
-const bc = baoChuan(parsed.b);
-const won = bc * parsed.k * 1000;
-
-const totalBefore = objs.reduce((s, o) => s + (o.won || 0), 0);
-const totalToNow = totalBefore + won;
-
-// forecast:
-// - nếu lần này sạch => forecast = dateYmd + interval
-// - nếu cắt dỡ => forecast dựa lastCleanDate (nếu có)
-const stBefore = computeBaiState(objs, parsed.bai);
-const forecast =
-  tinhHinh === "Cắt sạch"
-    ? addDaysYmd(dateYmd, CUT_INTERVAL_DAYS)
-    : (stBefore.lastCleanDate ? addDaysYmd(stBefore.lastCleanDate, CUT_INTERVAL_DAYS) : "");
-
-// append row
-await appendRow([
-  new Date().toISOString(), // A
-  dateYmd,                  // B
-  userName,                 // C
-  parsed.bai,               // D
-  newProgress,              // E (progress)
-  max,                      // F
-  tinhHinh,                 // G
-  parsed.b,                 // H
-  bc,                       // I
-  parsed.k,                 // J
-  won,                      // K
-  parsed.note || "",        // L
-]);
-
-// output
-await sendSoKim({
-  chatId,
-  userName,
-  vong,
-  dateYmd,
-  bai: parsed.bai,
-  progressG: newProgress,
-  maxG: max,
-  tinhHinh,
-  baoTau: parsed.b,
-  baoChuanX: bc,
-  giaK: parsed.k,
-  won,
-  totalToNow,
-  forecast,
-});
-}
-
+/* ================== XỬ LÝ TIN NHẮN TEXT ================== */
 async function handleTextMessage(msg) {
   const chatId = msg.chat?.id;
   if (!chatId) return;
@@ -1157,284 +1676,271 @@ async function handleTextMessage(msg) {
   const userName = msg.from?.first_name || "Bạn";
   const textRaw = (msg.text || "").trim();
 
-  // Nếu user nhập mã 2525 ₩ể xác nhận xóa
+  // Xác nhận xóa bằng mã 2525 (dự phòng)
   if (textRaw === CONFIRM_CODE) {
-    const p = getPending(chatId);
-    if (!p) {
-      await send(chatId, "⚠️ Không có yêu cầu xoá nào ₩ang chờ xác nhận.", {
+    const rows = await getSeasonDataRows();
+    const idx = findLastRowIndexAny(rows);
+    if (!idx) {
+      await send(chatId, "Không có dữ liệu để xóa.", {
         reply_markup: buildMainKeyboard(),
       });
       return;
     }
-
-    if (p.action === "RESET") {
-      await clearAllData();
-      clearPending(chatId);
-      await send(chatId, "✅ Đã XOÁ SẠCH DATA (giữ header). Bạn có thể làm lại từ ₩ầu.", {
-        reply_markup: buildMainKeyboard(),
-      });
-      return;
-    }
-
-    if (p.action === "DEL_LAST") {
-      const rows = await getRows();
-      const idx = findLastRowIndexAny(rows);
-      if (!idx) {
-        clearPending(chatId);
-        await send(chatId, "Không có dữ liệu ₩ể xoá.", { reply_markup: buildMainKeyboard() });
-        return;
-      }
-      await clearRow(idx);
-      clearPending(chatId);
-      await send(chatId, "✅ Đã xoá dòng gần nhất.", { reply_markup: buildMainKeyboard() });
-      return;
-    }
-
-    // fallback
-    clearPending(chatId);
-    await send(chatId, "⚠️ Yêu cầu xác nhận không hợp lệ.", {
+    await clearSeasonDataRow(idx);
+    await send(chatId, "✅ Đã xóa dòng gần nhất.", {
       reply_markup: buildMainKeyboard(),
     });
     return;
   }
 
-  // ====== MENU BUTTONS (Reply keyboard texts) ======
+  // ====== NÚT BẤM MENU DƯỚI KHUNG CHAT ======
   if (textRaw === "/start") {
-    await send(chatId, "✅ Sổ Kim ₩ã sẵn sàng. Bạn cứ nhập lệnh theo cú pháp.", {
-      reply_markup: buildMainKeyboard(),
-    });
+    await send(
+      chatId,
+      `🌊 SỔ KIM SẴN SÀNG - VỤ MÙA ${getSeasonDisplay()}!\nĐã tải ${
+        Object.keys(DAMS_CONFIG).length
+      } đám cấu hình.\nBấm nút menu bên dưới để thao tác nhanh một chạm.`,
+      { reply_markup: buildMainKeyboard() }
+    );
     return;
   }
 
+  if (textRaw === "📋 Tình hình các đám") return reportAllDamsStatus(chatId);
+  if (textRaw === "📆 Lịch cắt các đám") return reportCutSchedule(chatId);
   if (textRaw === "📅 Thống kê tháng này") return reportMonth(chatId);
   if (textRaw === "🔁 Thống kê theo VÒNG") return reportByVong(chatId);
-  if (textRaw === "📍 Thống kê theo BÃI") return reportByBai(chatId);
-  if (textRaw === "📆 Lịch cắt các bãi") return reportCutSchedule(chatId);
-  if (textRaw === "📋 Danh sách lệnh ₩ã gửi") return reportCommandList(chatId);
+  if (textRaw === "💰 TỔNG THU VỤ MÙA") return reportSeasonTotal(chatId);
+  if (textRaw === "📋 Lệnh cắt đã gửi") return reportCommandList(chatId);
+  if (textRaw === "📂 XEM DỮ LIỆU VỤ CŨ") return reportLegacySeason(chatId);
+  if (textRaw === "ℹ️ Hướng dẫn cú pháp") return sendHelp(chatId);
 
-  if (textRaw === "💰 TỔNG THU NHẬP") {
-    const rows = await getRows();
-    const objs = rows.map(rowToObj);
-
-    const total = objs.reduce((s, o) => s + (Number(o.won) || 0), 0);
-    const fmt = total.toLocaleString("vi-VN");
-
-    await send(chatId, `💰 TỔNG THU NHẬP: ${fmt}₩`, { reply_markup: buildMainKeyboard() });
-    return;
-  }
-
-  if (textRaw === "➕ Thêm bãi") {
-    await send(
-      chatId,
-      `➕ THÊM BÃI MỚI\nBạn gõ theo mẫu:\n• them bai <Bãi> <SốDây>\nVí dụ:\n• them bai A99 70\n\nSau khi thêm, bãi sẽ dùng ₩ược như các bãi khác (thống kê, lịch cắt, nhập lệnh...).`,
-      { reply_markup: buildMainKeyboard() }
-    );
-    return;
-  }
-
-  if (textRaw === "🧷 Sửa số dây bãi") {
-    await send(
-      chatId,
-      `🧷 SỬA SỐ DÂY CỦA BÃI\nBạn gõ theo mẫu:\n• sua day <Bãi> <SốDâyMới>\nVí dụ:\n• sua day A27 65\n\nLưu ý: sửa số dây ảnh hưởng cách tính progress (E/max). Các chức năng khác giữ nguyên.`,
-      { reply_markup: buildMainKeyboard() }
-    );
-    return;
-  }
+  // Mở menu nút bấm inline tương ứng
+  if (textRaw === "💊 Ghi nhận ĐI THUỐC") return showThuocMenu(chatId);
+  if (textRaw === "🕸️ Ghi nhận TÁCH LƯỚI") return showTachLuoiMenu(chatId);
+  if (textRaw === "🚢 Mốc Hạ thủy / Thả lưới") return showHaThuyMenu(chatId);
+  if (textRaw === "🌀 Tránh bão / Nghỉ gió") return showNghiBienMenu(chatId);
+  if (textRaw === "➕ Thêm/Sửa Đám & Lưới") return showAddDamMenu(chatId);
 
   if (textRaw === "✏️ Sửa dòng gần nhất") {
     await send(
       chatId,
-      `✏️ SỬA DÒNG GẦN NHẤT\nBạn gõ:  sua <cú pháp mới>\nVí dụ:\nsua A27 60b 200k\nsua A27 30g 40b 220k\nsua A27 80b 120k 5d`,
+      `✏️ SỬA DÒNG GẦN NHẤT\nBạn gõ: sua <cú pháp mới>\nVí dụ:\n• sua A 60b 220k\n• sua A 30g 40b 220k`,
       { reply_markup: buildMainKeyboard() }
     );
     return;
   }
 
   if (textRaw === "🗑️ Xóa dòng gần nhất") {
-    setPending(chatId, "DEL_LAST");
-    await send(chatId, `⚠️ Xác nhận xoá dòng gần nhất: nhập mã ${CONFIRM_CODE}`, {
+    const inline_keyboard = [
+      [
+        { text: "🗑️ XÁC NHẬN XÓA NGAY", callback_data: "CONFIRM_DEL_LAST" },
+        { text: "❌ HỦY", callback_data: "CANCEL_ACTION" },
+      ],
+    ];
+    await send(
+      chatId,
+      "⚠️ Bạn có chắc chắn muốn xóa dòng gần nhất không?",
+      { reply_markup: { inline_keyboard } }
+    );
+    return;
+  }
+
+  // ====== LỆNH GÕ TEXT: KHỞI VỤ & KỸ THUẬT ======
+
+  // Hạ thủy
+  if (/^ha\s*thuy(\s+.*)?$/i.test(textRaw)) {
+    const parts = textRaw.split(/\s+/);
+    const dateToken = parts[2] || parts[1];
+    const dateObj = parseCustomDate(dateToken, false);
+    return recordHaThuy(dateObj, chatId, userName);
+  }
+
+  // Thả lưới
+  if (/^tha\s*luoi\s+/i.test(textRaw)) {
+    const body = textRaw.replace(/^tha\s*luoi\s+/i, "").trim();
+    const parts = body.split(/\s+/);
+    const dam = parts[0]?.toUpperCase() || "A";
+    let loaiLuoi = "Lưới Nhà Máy";
+    let soDay = DEFAULT_NHA_MAY_DAY;
+    let dateToken = null;
+
+    for (let i = 1; i < parts.length; i++) {
+      const p = parts[i];
+      if (/^(nm|nhamay|tn|tunhien|so|hao|luoiso)$/i.test(p)) {
+        loaiLuoi = normalizeLoaiLuoi(p);
+      } else if (/^\d+$/.test(p) && Number(p) > 0) {
+        soDay = Number(p);
+      } else if (/^\d+d$/i.test(p) || /^\d{1,2}\/\d{1,2}(\/\d{4})?$/.test(p)) {
+        dateToken = p;
+      }
+    }
+    const dateObj = parseCustomDate(dateToken, false);
+    return recordThaLuoi(dam, loaiLuoi, soDay, dateObj, chatId, userName);
+  }
+
+  // Tách lưới
+  if (/^(?:tach\s*luoi|tach)\s+/i.test(textRaw)) {
+    const body = textRaw.replace(/^tach\s*luoi\s+/i, "").replace(/^tach\s+/i, "").trim();
+    const parts = body.split(/\s+/);
+    const dam = parts[0]?.toUpperCase() || "A";
+    const dateObj = parseCustomDate(parts[1] || null, false);
+    return recordTachLuoi(dam, dateObj, chatId, userName);
+  }
+
+  // Đi thuốc
+  if (/^(?:di\s*thuoc|thuoc)\s+/i.test(textRaw)) {
+    const body = textRaw.replace(/^di\s*thuoc\s+/i, "").replace(/^thuoc\s+/i, "").trim();
+    const parts = body.split(/\s+/);
+    let dateToken = null;
+    const damList = [];
+
+    for (const p of parts) {
+      if (/^\d+d$/i.test(p) || /^\d{1,2}\/\d{1,2}(\/\d{4})?$/.test(p)) {
+        dateToken = p;
+      } else {
+        damList.push(p.toUpperCase());
+      }
+    }
+    const dateObj = parseCustomDate(dateToken, false);
+    return recordDiThuoc(damList.length ? damList : ["A"], dateObj, chatId, userName);
+  }
+
+  // Tránh bão
+  if (/^(?:tranh\s*bao|nghi\s*bao|bao)(\s+.*)?$/i.test(textRaw)) {
+    const parts = textRaw.split(/\s+/);
+    let days = 1;
+    let dateToken = null;
+    for (const p of parts) {
+      if (/^\d+d$/i.test(p) || /^\d{1,2}\/\d{1,2}(\/\d{4})?$/.test(p)) dateToken = p;
+      else if (/^\d+$/.test(p)) days = Number(p);
+    }
+    const dateObj = parseCustomDate(dateToken, false);
+    return recordNghiBien("BAO", days, dateObj, chatId, userName);
+  }
+
+  // Nghỉ gió / Làm bờ
+  if (textRaw.toLowerCase() === "nghi gio" || textRaw.toLowerCase() === "nghỉ gió") {
+    return recordNghiBien("GIO", 1, kst(), chatId, userName);
+  }
+  if (textRaw.toLowerCase() === "lam bo" || textRaw.toLowerCase() === "làm bờ") {
+    return recordNghiBien("BO", 1, kst(), chatId, userName);
+  }
+
+  // Thêm đám / Sửa dây
+  if (/^them\s+(?:dam|bai)\s+/i.test(textRaw)) {
+    const body = textRaw.replace(/^them\s+(?:dam|bai)\s+/i, "").trim();
+    const parts = body.split(/\s+/);
+    const dam = parts[0].toUpperCase();
+    let loai = "Lưới Nhà Máy";
+    let soDay = DEFAULT_NHA_MAY_DAY;
+    if (parts[1]) loai = normalizeLoaiLuoi(parts[1]);
+    if (parts[2] && Number(parts[2]) > 0) soDay = Number(parts[2]);
+    else if (loai === "Lưới Nhà Máy") soDay = DEFAULT_NHA_MAY_DAY;
+
+    await upsertDamConfig(dam, { loaiLuoi: loai, soDay });
+    await send(
+      chatId,
+      `✅ Đã thêm Đám ${dam} (${loai} - ${soDay} dây) cho Vụ mùa ${getSeasonDisplay()}.`,
+      { reply_markup: buildMainKeyboard() }
+    );
+    return;
+  }
+
+  if (/^sua\s+day\s+/i.test(textRaw)) {
+    const body = textRaw.replace(/^sua\s+day\s+/i, "").trim();
+    const parts = body.split(/\s+/);
+    const dam = parts[0]?.toUpperCase();
+    const max = Number(parts[1]);
+    if (!dam || !Number.isFinite(max) || max <= 0) {
+      await send(chatId, "❌ Cú pháp: sua day <TênĐám> <SốDâyMới>", {
+        reply_markup: buildMainKeyboard(),
+      });
+      return;
+    }
+    await upsertDamConfig(dam, { soDay: max });
+    await send(chatId, `✅ Đã cập nhật Đám ${dam} thành ${max} dây.`, {
       reply_markup: buildMainKeyboard(),
     });
     return;
   }
 
-  if (textRaw === "⚠️ XÓA SẠCH DỮ LIỆU") {
-    setPending(chatId, "RESET");
-    await send(chatId, `⚠️ Xác nhận XOÁ SẠCH dữ liệu: nhập mã ${CONFIRM_CODE}`, {
-      reply_markup: buildMainKeyboard(),
-    });
-    return;
-  }
-
-
-  // ====== THÊM BÃI / SỬA SỐ DÂY: "them bai ..." | "sua day ..." ======
-  const baiMaxCmd = parseBaiMaxCommand(textRaw);
-  if (baiMaxCmd) {
-    const { action, bai, max } = baiMaxCmd;
-
-    // ADD: không cho ghi ₩è (₩ể tránh thay ₩ổi nhầm). Muốn ₩ổi thì dùng "sua day".
-    if (action === "ADD" && MAX_DAY[bai]) {
-      await send(
-        chatId,
-        `⚠️ Bãi ${bai} ₩ã tồn tại (${MAX_DAY[bai]} dây).\nNếu bạn muốn ₩ổi số dây, hãy dùng: sua day ${bai} <SốDâyMới>`,
-        { reply_markup: buildMainKeyboard() }
-      );
-      return;
-    }
-
-    // Update in sheet + in memory
-    try {
-      const resUpsert = await upsertBaiMaxToConfig(bai, max);
-      MAX_DAY[bai] = max;
-
-      await send(
-        chatId,
-        `✅ ${resUpsert.action === "ADDED" ? "Đã thêm" : "Đã cập nhật"} bãi ${bai}: ${max} dây.\nBây giờ bạn có thể nhập lệnh như: ${bai} 60b 220k`,
-        { reply_markup: buildMainKeyboard() }
-      );
-      return;
-    } catch (e) {
-      console.log("❌ Upsert CONFIG error:", e?.message || e);
-      await send(
-        chatId,
-        `⚠️ Không lưu ₩ược cấu hình bãi vào Google Sheet.\nBạn kiểm tra giúp mình: Google Sheet có tab "${CONFIG_SHEET_NAME}" chưa (₩úng tên).\nChi tiết lỗi: ${e?.message || e}`,
-        { reply_markup: buildMainKeyboard() }
-      );
-      return;
-    }
-  }
-
-  // ====== SỬA: "sua <...>" ======
+  // Sửa dòng gần nhất
   if (textRaw.toLowerCase().startsWith("sua ")) {
     const newLine = textRaw.slice(4).trim();
     const parsed = parseWorkLine(newLine);
-
     if (!parsed || parsed.type !== "WORK") {
-      await send(chatId, buildSaiCuPhapText(), { reply_markup: buildMainKeyboard() });
+      await send(
+        chatId,
+        "❌ Cú pháp sửa chưa đúng. Ví dụ: sua A 60b 220k hoặc sua A 30g 40b 220k",
+        { reply_markup: buildMainKeyboard() }
+      );
       return;
     }
 
-    const rows = await getRows();
+    const rows = await getSeasonDataRows();
     const idx = findLastWorkRowIndexForUserAndBai(rows, userName, parsed.bai);
-
     if (!idx) {
-      await send(chatId, "❌ Không tìm thấy dòng gần nhất ₩ể sửa cho bãi này.", {
+      await send(chatId, "❌ Không tìm thấy dòng gần nhất của bãi này để sửa.", {
         reply_markup: buildMainKeyboard(),
       });
       return;
     }
 
-    // Lấy toàn bộ objs ₩ể tính lại progress/vòng cho dòng sửa
     const objs = rows.map(rowToObj);
-
-    // Vì sửa dòng gần nhất của bãi, lấy "state trước dòng ₩ó":
-    // Cách ₩ơn giản: tạm thời bỏ dòng cũ ra khỏi list rồi tính state.
     const rowIndex0 = idx - 2;
     const oldObj = rowToObj(rows[rowIndex0]);
-
     const objsWithoutOld = objs.filter((_, i) => i !== rowIndex0);
 
-    // ngày làm:
-    const nowKST = kst();
-    const workDate = parsed.dayInMonth
-      ? new Date(nowKST.getFullYear(), nowKST.getMonth(), parsed.dayInMonth)
-      : new Date(nowKST.getTime() - 86400000);
-
+    const workDate = parseCustomDate(parsed.dateToken, true);
     const dateYmd = ymd(workDate);
     const bc = baoChuan(parsed.b);
     const won = bc * parsed.k * 1000;
 
-    // tính progress & vòng theo dữ liệu ₩ã loại dòng cũ
     const { max, newProgress, tinhHinh, vong } = buildWorkProgress({
       allObjs: objsWithoutOld,
       bai: parsed.bai,
       gDelta: parsed.gDelta,
     });
 
-    // tổng thu ₩ến thời ₩iểm này: cộng tất cả + dòng sửa
     const totalBefore = objsWithoutOld.reduce((s, o) => s + (o.won || 0), 0);
     const totalToNow = totalBefore + won;
 
-    // forecast: dựa lần cắt sạch gần nhất (sau khi sửa)
-    // nếu lần này sạch => dùng dateYmd làm mốc
-    const stAfter = computeBaiState(
-      [
-        ...objsWithoutOld,
-        {
-          ...oldObj,
-          date: dateYmd,
-          bai: parsed.bai,
-          dayG: newProgress,
-          maxG: max,
-          tinhHinh,
-          baoTau: parsed.b,
-          baoChuan: bc,
-          giaK: parsed.k,
-          won,
-        },
-      ],
-      parsed.bai
-    );
-
-    const forecast = tinhHinh === "Cắt sạch"
-      ? addDaysYmd(dateYmd, CUT_INTERVAL_DAYS)
-      : forecastForBai(stAfter);
-
-    // update row giữ timestamp cũ
     const newRow = [
-      oldObj.ts || new Date().toISOString(), // A
-      dateYmd,                               // B
-      userName,                              // C
-      parsed.bai,                            // D
-      newProgress,                           // E (progress)
-      max,                                   // F
-      tinhHinh,                              // G
-      parsed.b,                              // H
-      bc,                                    // I
-      parsed.k,                              // J
-      won,                                   // K
-      parsed.note || oldObj.note || "",      // L
+      oldObj.ts || new Date().toISOString(),
+      dateYmd,
+      userName,
+      parsed.bai,
+      newProgress,
+      max,
+      tinhHinh,
+      parsed.b,
+      bc,
+      parsed.k,
+      won,
+      parsed.note || oldObj.note || "",
     ];
 
-    await updateRow(idx, newRow);
+    await updateSeasonDataRow(idx, newRow);
 
-    // trả lại ₩úng format "SỔ KIM" luôn (kèm forecast mới)
-    await sendSoKim({
-      chatId,
-      userName,
-      vong,
-      dateYmd,
-      bai: parsed.bai,
-      progressG: newProgress,
-      maxG: max,
-      tinhHinh,
-      baoTau: parsed.b,
-      baoChuanX: bc,
-      giaK: parsed.k,
-      won,
-      totalToNow,
-      forecast,
-    });
+    const text =
+`✏️ ĐÃ CẬP NHẬT DÒNG GẦN NHẤT:
+--- 🌊 SỔ KIM (Vòng: ${vong}) ---
+📅 Ngày: ${fmtDayVN(workDate)}
+📍 Đám: ${parsed.bai}
+✂️ Tình hình: ${tinhHinh} (${newProgress}/${max} dây)
+📦 Sản lượng: ${parsed.b} bao (≈ ${bc} bao chuẩn)
+💰 Giá: ${parsed.k}k
+💵 THU: ${won.toLocaleString()} ₩
+🏆 TỔNG THU VỤ: ${moneyToTrieu(totalToNow)} ₩`.trim();
 
+    await send(chatId, text, { reply_markup: buildMainKeyboard() });
     return;
   }
 
-  // ====== MULTI WORK (NHIỀU BÃI / 1 DÒNG) ======
-    // thu thập summary cho multi
-    let sumWon = 0;
-    let sumBao = 0;
-    let totalBaoInput = null;
-    let usedDate = null;
-    let usedK = null;
-    const usedBais = [];
-
-
-
-  // ====== TIEP (NHIỀU BÃI / 1 DÒNG) ======
-  // Format: Tiep A27 A22 90b 320k [15|15d] [note...]
+  // Tiếp nối nhiều đám (TIEP)
   const tiep = parseTiepMultiLine(textRaw);
   if (tiep && Array.isArray(tiep) && tiep.length) {
-    const rows = await getRows();
+    const rows = await getSeasonDataRows();
     const objs = rows.map(rowToObj);
 
     for (const one of tiep) {
@@ -1442,20 +1948,19 @@ async function handleTextMessage(msg) {
       if (!lastDelta) {
         await send(
           chatId,
-          `⚠️ ${one.bai} ₩ang CẮT SẠCH hoặc chưa có dữ liệu cắt dỡ ₩ể "Tiep".`,
+          `⚠️ ${one.bai} đang CẮT SẠCH hoặc chưa có dữ liệu cắt dỡ để "Tiep".`,
           { reply_markup: buildMainKeyboard() }
         );
         continue;
       }
-
       await processWorkEntry(
         {
           type: "WORK",
           bai: one.bai,
-          gDelta: lastDelta, // auto dùng delta lần trước
+          gDelta: lastDelta,
           b: one.b,
           k: one.k,
-          dayInMonth: one.dayInMonth,
+          dateToken: one.dateToken,
           note: one.note ? `[Tiep] ${one.note}` : "[Tiep]",
         },
         chatId,
@@ -1465,84 +1970,61 @@ async function handleTextMessage(msg) {
     return;
   }
 
-
-  // Format hỗ trợ:
-  // 1) A27 A22 50b 320k 15 <note...>
-  // 2) A27 A22 30g 50b 310k 15d <note...>
-  // 3) A27 30g A22 30g 100b 320k <note...>
+  // Nhiều đám cùng lúc
   const multi = parseMultiWorkLine(textRaw);
   if (multi && Array.isArray(multi) && multi.length) {
+    let totalWon = 0;
+    let totalB = 0;
+    const bais = [];
+    let usedK = multi[0].k;
+
     for (const one of multi) {
-      await processWorkEntry(one, chatId, userName);      sumBao += Number(one.b || 0);
-      if (totalBaoInput == null && one._metaTotalB) totalBaoInput = Number(one._metaTotalB);
-      usedDate = one.dayInMonth ? one.dayInMonth : null;
-      usedK = one.k;
-      if (!usedBais.includes(one.bai)) usedBais.push(one.bai);
+      await processWorkEntry(one, chatId, userName);
+      totalB += one.b;
+      totalWon += baoChuan(one.b) * one.k * 1000;
+      if (!bais.includes(one.bai)) bais.push(one.bai);
     }
-    const now = kst();
-    const d = usedDate ? new Date(now.getFullYear(), now.getMonth(), usedDate) : new Date(now.getTime() - 86400000);
-    sumWon = baoChuan((totalBaoInput != null ? totalBaoInput : sumBao)) * Number(usedK || 0) * 1000;
-    await sendMultiSummary({ chatId, userName, dateYmd: ymd(d), bais: usedBais, totalWon: sumWon, k: usedK, totalBao: (totalBaoInput != null ? totalBaoInput : sumBao) });
+
+    const summaryText =
+`✨ TỔNG KẾT LỆNH NHIỀU ĐÁM:
+📍 Các đám: ${bais.join(", ")}
+📦 Tổng bao: ${totalB} bao (≈ ${baoChuan(totalB)} bao chuẩn)
+💰 Giá: ${usedK}k
+💵 TỔNG TIỀN ĐỢT NÀY: ${totalWon.toLocaleString()} ₩ (${moneyToTrieu(totalWon)})`;
+
+    await send(chatId, summaryText, { reply_markup: buildMainKeyboard() });
     return;
   }
 
-
-  // ====== NO_WORK ======
+  // Cắt đơn đám
   const parsed = parseWorkLine(textRaw);
-
-  if (!parsed) {
-    await send(chatId, buildSaiCuPhapText(), { reply_markup: buildMainKeyboard() });
+  if (parsed && parsed.type === "WORK") {
+    await processWorkEntry(parsed, chatId, userName);
     return;
   }
 
-  if (parsed.type === "NO_WORK") {
-    const d = kst();
-    await appendRow([
-      new Date().toISOString(), // A
-      ymd(d),                   // B
-      userName,                 // C
-      "",                       // D
-      0,                        // E
-      0,                        // F
-      parsed.tinhHinh,          // G
-      0,                        // H
-      0,                        // I
-      0,                        // J
-      0,                        // K
-      "",                       // L
-    ]);
-    await send(chatId, "✅ Đã ghi nhận: " + parsed.tinhHinh, {
-      reply_markup: buildMainKeyboard(),
-    });
-    return;
-  }
-
-  // ====== WORK ======
-  await processWorkEntry(parsed, chatId, userName);
-  return;
-}
-
-/* ================== CALLBACK (optional) ==================
-Hiện tại ta dùng Reply Keyboard (bấm là gửi text),
-nên callback_query không bắt buộc.
-Nhưng vẫn ₩ể answerCallbackQuery nếu sau này bạn thêm inline buttons.
-=========================================================== */
-async function handleCallbackQuery(cb) {
-  await tg("answerCallbackQuery", { callback_query_id: cb.id });
+  // Sai cú pháp
+  await send(
+    chatId,
+    `❌ Nhập sai cú pháp rồi bạn ơi 😅\n\nVí dụ các lệnh thường dùng:\n• Cắt sạch: A 60b 220k\n• Cắt dỡ: A 30g 40b 220k\n\n👉 Bạn hãy bấm các nút trên màn hình để thao tác một chạm mà không cần gõ lệnh nhé!`,
+    { reply_markup: buildMainKeyboard() }
+  );
 }
 
 /* ================== WEBHOOK ================== */
+app.get("/", (_, res) => res.send("KIM BOT OK - " + VERSION));
+app.get("/ping", (_, res) =>
+  res.json({ ok: true, version: VERSION, season: getSeasonDisplay() })
+);
+
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
-
   try {
     const body = req.body;
-
     if (body?.callback_query) {
       await handleCallbackQuery(body.callback_query);
       return;
     }
-
     if (body?.message) {
       await handleTextMessage(body.message);
       return;
@@ -1552,26 +2034,19 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-/* ================== START ================== */
+/* ================== KHỞI CHẠY SERVER ================== */
 const PORT = process.env.PORT || 10000;
 
-// ✅ Load CONFIG bãi trước khi nhận webhook
 (async () => {
-  await loadBaiConfigFromSheet();
-  app.listen(PORT, () => console.log("✅ KIM BOT READY on", PORT, "|", VERSION));
+  try {
+    await loadConfigFromSheet();
+    await getSeasonDataRows(true); // Load sẵn data vào cache khi bot khởi động
+  } catch (e) {
+    console.log("Init cache warning:", e?.message || e);
+  }
+  app.listen(PORT, () =>
+    console.log(
+      `✅ KIM BOT TURBO READY on port ${PORT} | ${VERSION} | Vụ mùa: ${getSeasonDisplay()}`
+    )
+  );
 })();
-
-/**
- * ============================================================
- * NOTES:
- * - Nếu bạn muốn menu luôn hiện ngay khi chat mở:
- *   chỉ cần /start 1 lần. Bot ₩ã gắn keyboard vào mỗi câu trả lời.
- *
- * - Cột E (DayG) bây giờ là "progress cộng dồn" theo vòng,
- *   nên bãi 34 cắt 2 lần 55g + 54g => lần 2 sẽ thành 109/109 => CẮT SẠCH.
- *
- * - Thống kê vòng:
- *   cộng theo vòng của từng bãi (cleanCountBefore+1) và tính cả cắt dỡ.
- *
- * ============================================================
- */
