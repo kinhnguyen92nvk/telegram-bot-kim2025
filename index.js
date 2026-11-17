@@ -497,7 +497,8 @@ async function updateSeasonDataRow(rowNumber1Based, rowValues12) {
 async function clearSeasonDataRow(rowNumber1Based) {
   const idx0 = rowNumber1Based - 2;
   if (idx0 >= 0 && idx0 < cachedDataRows.length) {
-    cachedDataRows.splice(idx0, 1);
+    // Giữ nguyên slot rỗng để khớp 1-1 với chỉ số dòng trên Google Sheets
+    cachedDataRows[idx0] = [];
   }
 
   const seasonKey = getSeasonKey();
@@ -1365,7 +1366,7 @@ function getKabekiStats(objs) {
   return { totalKbk, totalLines, splitKbk, remainKbk, movedLines, stayLines };
 }
 
-async function recordTachKabeki(soKabeki, targetDam, dateObj, chatId, userName) {
+async function recordTachKabeki(soKabeki, targetDam, dateObj, chatId, userName, sourceDam = null) {
   const kbk = Number(soKabeki);
   if (!Number.isFinite(kbk) || kbk <= 0) {
     await send(chatId, "❌ Số đường kabeki cần tách phải lớn hơn 0.", {
@@ -1378,6 +1379,7 @@ async function recordTachKabeki(soKabeki, targetDam, dateObj, chatId, userName) 
   const tongLuoi = kbk * KABEKI_MULTIPLIER; // 5 đường/kabeki
   const movedLines = kbk * 4; // 4 đường chuyển sang bãi mới
   const stayLines = kbk * 1; // 1 đường ở lại vị trí gốc Kabeki
+  const srcLabel = sourceDam && sourceDam !== "KABEKI" ? sourceDam.toUpperCase() : "vị trí Kabeki gốc";
 
   const rows = await getSeasonDataRows();
   const objs = rows.map(rowToObj);
@@ -1399,11 +1401,15 @@ async function recordTachKabeki(soKabeki, targetDam, dateObj, chatId, userName) 
     await upsertDamConfig(damU, {
       soDay: newDamDay,
       ngayTach: dateYmd,
-      note: `${damCfg.note ? damCfg.note + " | " : ""}+${movedLines} đường từ tách ${kbk} kabeki`,
+      note: `${damCfg.note ? damCfg.note + " | " : ""}+${movedLines}đ từ tách ${kbk} kabeki (${srcLabel})`,
     });
     damInfo = `\n📍 Bãi ${damU} nhận: +${movedLines} đường (Tổng bãi ${damU}: ${newDamDay} đường)`;
   } else {
     damInfo = `\n📍 Đưa đi tách: ${movedLines} đường (4 đường/kabeki)`;
+  }
+
+  if (sourceDam && sourceDam !== "KABEKI") {
+    await upsertDamConfig(sourceDam.toUpperCase(), { ngayTach: dateYmd });
   }
 
   await appendSeasonDataRow([
@@ -1418,7 +1424,7 @@ async function recordTachKabeki(soKabeki, targetDam, dateObj, chatId, userName) 
     0,
     0,
     0,
-    `Tách ${kbk} kabeki (${tongLuoi} lưới): Chuyển ${movedLines} đường${targetDam ? ` -> ${targetDam.toUpperCase()}` : ""} | Ở lại gốc ${stayLines} đường`,
+    `Tách ${kbk} kabeki từ ${srcLabel}${targetDam ? ` -> ${targetDam.toUpperCase()} (+${movedLines}đ)` : ""} | Ở lại ${srcLabel}: ${stayLines}đ`,
   ]);
 
   const newSplit = statsBefore.splitKbk + kbk;
@@ -1427,11 +1433,11 @@ async function recordTachKabeki(soKabeki, targetDam, dateObj, chatId, userName) 
   const text =
 `🕸️ ĐÃ TÁCH LƯỚI KABEKI (QUY TẮC 4 + 1)
 📅 Ngày: ${fmtDayVN(dateObj)}
-✂️ Tách đợt này: ${kbk} kabeki (= ${tongLuoi} đường lưới)${damInfo}
-⚓ Ở lại vị trí Kabeki gốc: ${stayLines} đường (1 đường/kabeki)
+✂️ Tách từ ${srcLabel}: ${kbk} kabeki (= ${tongLuoi} đường lưới)${damInfo}
+⚓ Ở lại tại ${srcLabel}: ${stayLines} đường (1 đường/kabeki)
 ----------------------------------
 📦 Tổng gốc thả biển (giữ nguyên): ${statsBefore.totalKbk} kabeki (${statsBefore.totalLines} đường)
-✅ Tổng đã tách: ${newSplit} kabeki | Chờ tách: ${newRemain} kabeki`;
+✅ Đã tách: ${newSplit} kabeki | Lưới 5 chưa tách: ${newRemain} kabeki`;
 
   await send(chatId, text, { reply_markup: buildMainKeyboard() });
 }
