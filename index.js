@@ -567,17 +567,39 @@ function buildMainKeyboard() {
     keyboard: [
       [{ text: "📋 Tình hình các đám" }, { text: "📆 Lịch cắt các đám" }],
       [{ text: "💊 Ghi nhận ĐI THUỐC" }, { text: "🕸️ Ghi nhận TÁCH LƯỚI" }],
-      [{ text: "🚢 Mốc Hạ thủy / Thả lưới" }, { text: "🌀 Tránh bão / Nghỉ gió" }],
-      [{ text: "📅 Thống kê tháng này" }, { text: "🔁 Thống kê theo VÒNG" }],
-      [{ text: "💰 TỔNG THU VỤ MÙA" }, { text: "📋 Lệnh cắt đã gửi" }],
-      [{ text: "📂 XEM DỮ LIỆU VỤ CŨ" }, { text: "➕ Thêm/Sửa Đám & Lưới" }],
-      [{ text: "✏️ Sửa dòng gần nhất" }, { text: "🗑️ Xóa dòng gần nhất" }],
-      [{ text: "ℹ️ Hướng dẫn cú pháp" }],
+      [{ text: "📊 THỐNG KÊ MÙA VỤ" }, { text: "✏️ Sửa / 🗑️ Xóa dữ liệu" }],
     ],
     resize_keyboard: true,
-    one_time_keyboard: false,
-    is_persistent: true,
+    one_time_keyboard: true,
+    is_persistent: false,
   };
+}
+
+async function showStatsHubMenu(chatId) {
+  const inline_keyboard = [
+    [
+      { text: "📅 Thống kê tháng này", callback_data: "STATS:MONTH" },
+      { text: "🔁 Thống kê theo Vòng", callback_data: "STATS:VONG" },
+    ],
+    [
+      { text: "💰 Tổng thu Vụ mùa", callback_data: "STATS:SEASON" },
+      { text: "📋 Lệnh cắt đã gửi", callback_data: "STATS:COMMANDS" },
+    ],
+    [
+      { text: "📂 Xem dữ liệu Vụ cũ", callback_data: "SHOW:LEGACY_SEASON" },
+      { text: "ℹ️ Hướng dẫn cú pháp", callback_data: "STATS:HELP" },
+    ],
+    [
+      { text: "🚢 Mốc Hạ thủy / Thả lưới", callback_data: "STATS:HATHUY" },
+      { text: "➕ Thêm/Sửa Đám & Dây", callback_data: "STATS:ADDDAM" },
+    ],
+  ];
+
+  await send(
+    chatId,
+    `📊 THỐNG KÊ & QUẢN LÝ MÙA VỤ ${getSeasonDisplay()}\nChọn mục bạn muốn xem bên dưới:`,
+    { reply_markup: { inline_keyboard } }
+  );
 }
 
 /* ================== PARSE NGÀY LINH HOẠT ================== */
@@ -1188,6 +1210,25 @@ function getActiveDams() {
     .sort();
 }
 
+function getKabekiStats(objs) {
+  const kbkCfg = DAMS_CONFIG["KABEKI"];
+  const totalLines = Number(kbkCfg?.soDay || 630);
+  const totalKbk = Math.round((totalLines / KABEKI_MULTIPLIER) * 10) / 10;
+
+  let splitKbk = 0;
+  for (const o of objs) {
+    if (o.tinhHinh === "Tách lưới Kabeki") {
+      splitKbk += Number(o.dayG || 0);
+    }
+  }
+
+  const remainKbk = Math.max(0, Math.round((totalKbk - splitKbk) * 10) / 10);
+  const movedLines = splitKbk * 4;
+  const stayLines = splitKbk * 1;
+
+  return { totalKbk, totalLines, splitKbk, remainKbk, movedLines, stayLines };
+}
+
 async function recordTachKabeki(soKabeki, targetDam, dateObj, chatId, userName) {
   const kbk = Number(soKabeki);
   if (!Number.isFinite(kbk) || kbk <= 0) {
@@ -1198,31 +1239,35 @@ async function recordTachKabeki(soKabeki, targetDam, dateObj, chatId, userName) 
   }
 
   const dateYmd = ymd(dateObj);
-  const duongLuoiTach = kbk * KABEKI_MULTIPLIER;
+  const tongLuoi = kbk * KABEKI_MULTIPLIER; // 5 đường/kabeki
+  const movedLines = kbk * 4; // 4 đường chuyển sang bãi mới
+  const stayLines = kbk * 1; // 1 đường ở lại vị trí gốc Kabeki
 
-  const kbkCfg = DAMS_CONFIG["KABEKI"] || { soDay: 0 };
-  const currentDuong = Number(kbkCfg.soDay || 0);
-  const remainDuong = Math.max(0, currentDuong - duongLuoiTach);
-  const remainKbk = Math.round((remainDuong / KABEKI_MULTIPLIER) * 10) / 10;
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
+  const statsBefore = getKabekiStats(objs);
 
+  // KHÔNG TRỪ soDay gốc của KABEKI (giữ nguyên tổng ban đầu 126 kabeki = 630 đường)
   await upsertDamConfig("KABEKI", {
     loaiLuoi: "Kabeki (Lưới 5)",
-    soDay: remainDuong,
+    soDay: statsBefore.totalLines,
     ngayTach: dateYmd,
-    note: `Còn ${remainKbk} kabeki x 5 = ${remainDuong} đường lưới chờ tách`,
+    note: `Tổng gốc ${statsBefore.totalKbk} kabeki (${statsBefore.totalLines} lưới) | Đã tách: ${statsBefore.splitKbk + kbk} kabeki`,
   });
 
   let damInfo = "";
   if (targetDam) {
     const damU = targetDam.toUpperCase();
-    const damCfg = DAMS_CONFIG[damU] || { loaiLuoi: "Lưới Tự Nhiên", soDay: 0 };
-    const newDamDay = Number(damCfg.soDay || 0) + duongLuoiTach;
+    const damCfg = DAMS_CONFIG[damU] || { loaiLuoi: "Lưới Tách (Kabeki)", soDay: 0 };
+    const newDamDay = Number(damCfg.soDay || 0) + movedLines;
     await upsertDamConfig(damU, {
       soDay: newDamDay,
       ngayTach: dateYmd,
-      note: `${damCfg.note ? damCfg.note + " | " : ""}+${duongLuoiTach} đường từ tách ${kbk} kabeki`,
+      note: `${damCfg.note ? damCfg.note + " | " : ""}+${movedLines} đường từ tách ${kbk} kabeki`,
     });
-    damInfo = `\n📍 Đã chuyển vào Bãi ${damU}: +${duongLuoiTach} đường (Tổng đang có: ${newDamDay} đường)`;
+    damInfo = `\n📍 Bãi ${damU} nhận: +${movedLines} đường (Tổng bãi ${damU}: ${newDamDay} đường)`;
+  } else {
+    damInfo = `\n📍 Đưa đi tách: ${movedLines} đường (4 đường/kabeki)`;
   }
 
   await appendSeasonDataRow([
@@ -1230,21 +1275,27 @@ async function recordTachKabeki(soKabeki, targetDam, dateObj, chatId, userName) 
     dateYmd,
     userName,
     targetDam ? targetDam.toUpperCase() : "KABEKI",
-    0,
-    duongLuoiTach,
+    kbk,        // E: số kabeki đã tách
+    movedLines, // F: số đường chuyển sang bãi mới (4x)
     "Tách lưới Kabeki",
     0,
     0,
     0,
     0,
-    `Tách ${kbk} kabeki = ${duongLuoiTach} đường lưới${targetDam ? ` -> ${targetDam.toUpperCase()}` : ""}`,
+    `Tách ${kbk} kabeki (${tongLuoi} lưới): Chuyển ${movedLines} đường${targetDam ? ` -> ${targetDam.toUpperCase()}` : ""} | Ở lại gốc ${stayLines} đường`,
   ]);
 
+  const newSplit = statsBefore.splitKbk + kbk;
+  const newRemain = Math.max(0, Math.round((statsBefore.totalKbk - newSplit) * 10) / 10);
+
   const text =
-`🕸️ ĐÃ TÁCH LƯỚI KABEKI (LƯỚI 5)
+`🕸️ ĐÃ TÁCH LƯỚI KABEKI (QUY TẮC 4 + 1)
 📅 Ngày: ${fmtDayVN(dateObj)}
-✂️ Đã tách: ${kbk} đường kabeki = ${duongLuoiTach} đường lưới đơn${damInfo}
-📦 Kho Kabeki còn lại: ${remainKbk} kabeki (= ${remainDuong} đường lưới chờ tách)`;
+✂️ Tách đợt này: ${kbk} kabeki (= ${tongLuoi} đường lưới)${damInfo}
+⚓ Ở lại vị trí Kabeki gốc: ${stayLines} đường (1 đường/kabeki)
+----------------------------------
+📦 Tổng gốc thả biển (giữ nguyên): ${statsBefore.totalKbk} kabeki (${statsBefore.totalLines} đường)
+✅ Tổng đã tách: ${newSplit} kabeki | Chờ tách: ${newRemain} kabeki`;
 
   await send(chatId, text, { reply_markup: buildMainKeyboard() });
 }
@@ -1349,14 +1400,19 @@ async function showThuocMenu(chatId) {
   const dams = getActiveDams();
   const inline_keyboard = [];
 
-  // Tạo hàng nút cho từng đám
+  // Nút đi thuốc riêng cho KABEKI (Lưới 5)
+  inline_keyboard.push([
+    { text: "💊 Đi thuốc KABEKI (Lưới 5)", callback_data: "THUOC:KABEKI" },
+  ]);
+
+  // Tạo hàng nút cho từng bãi thu hoạch
   for (let i = 0; i < dams.length; i += 2) {
     const row = [
-      { text: `💊 Đám ${dams[i]}`, callback_data: `THUOC:${dams[i]}` },
+      { text: `💊 Bãi ${dams[i]}`, callback_data: `THUOC:${dams[i]}` },
     ];
     if (dams[i + 1]) {
       row.push({
-        text: `💊 Đám ${dams[i + 1]}`,
+        text: `💊 Bãi ${dams[i + 1]}`,
         callback_data: `THUOC:${dams[i + 1]}`,
       });
     }
@@ -1365,33 +1421,33 @@ async function showThuocMenu(chatId) {
 
   if (dams.length > 1) {
     inline_keyboard.push([
-      { text: "💊 Đi thuốc TẤT CẢ các đám hôm nay", callback_data: "THUOC:ALL" },
+      { text: "💊 Đi thuốc TẤT CẢ các bãi cắt", callback_data: "THUOC:ALL" },
     ]);
   }
 
   const text =
 `💊 GHI NHẬN ĐI THUỐC (1 CHẠM)
-Chọn đám bạn vừa đi thuốc hôm nay:
-(Hoặc gõ: "thuoc A27 28/10" nếu muốn ghi ngày khác)`;
+• Chọn 1 nút bên dưới để ghi nhận đi thuốc hôm nay.
+• Hoặc gõ ngày cụ thể: "thuoc A27 15/11" hay "thuoc KABEKI 15/11"`;
 
   await send(chatId, text, {
-    reply_markup: inline_keyboard.length ? { inline_keyboard } : undefined,
+    reply_markup: { inline_keyboard },
   });
 }
 
 async function showTachLuoiMenu(chatId) {
   const dams = getActiveDams();
-  const kbkCfg = DAMS_CONFIG["KABEKI"];
-  const kbkDuong = Number(kbkCfg?.soDay || 0);
-  const kbkCount = Math.round((kbkDuong / KABEKI_MULTIPLIER) * 10) / 10;
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
+  const kbkStats = getKabekiStats(objs);
 
   const inline_keyboard = [
     [
-      { text: "🕸️ Tách 5 Kabeki (=25 lưới)", callback_data: "KABEKI_TACH:5" },
-      { text: "🕸️ Tách 10 Kabeki (=50 lưới)", callback_data: "KABEKI_TACH:10" },
+      { text: "🕸️ Tách 5 Kabeki", callback_data: "KABEKI_TACH:5" },
+      { text: "🕸️ Tách 10 Kabeki", callback_data: "KABEKI_TACH:10" },
     ],
     [
-      { text: "🕸️ Tách 20 Kabeki (=100 lưới)", callback_data: "KABEKI_TACH:20" },
+      { text: "🕸️ Tách 20 Kabeki", callback_data: "KABEKI_TACH:20" },
     ],
   ];
 
@@ -1409,16 +1465,17 @@ async function showTachLuoiMenu(chatId) {
   }
 
   const text =
-`🕸️ GHI NHẬN TÁCH LƯỚI & KABEKI (1 CHẠM)
-📦 Kho Kabeki (Lưới 5): ${kbkCount} kabeki (= ${kbkDuong} đường lưới)
+`🕸️ TÁCH LƯỚI & KABEKI (QUY TẮC 4 + 1)
+📦 Tổng Kabeki thả biển: ${kbkStats.totalKbk} kabeki (= ${kbkStats.totalLines} lưới)
+✅ Đã tách: ${kbkStats.splitKbk} kabeki | Chưa tách: ${kbkStats.remainKbk} kabeki
 
-• Bấm nút trên để tách nhanh Kabeki hoặc tách theo từng đám.
-• Hoặc gõ lệnh chi tiết để tách vào bãi:
-  tach kabeki 10 A14 (Tách 10 kabeki = 50 đường chuyển sang A14)
-  tach luoi A22 25d (Ghi ngày tách cụ thể)`;
+• Gõ lệnh tách vào bãi cụ thể (4 đường sang bãi, 1 đường ở lại vị trí Kabeki):
+  VD: tach kabeki 10 B24
+  (B24 nhận 40 đường, 10 đường ở lại vị trí gốc Kabeki)
+• Hoặc bấm nhanh nút phía trên.`;
 
   await send(chatId, text, {
-    reply_markup: inline_keyboard.length ? { inline_keyboard } : undefined,
+    reply_markup: { inline_keyboard },
   });
 }
 
@@ -1497,11 +1554,12 @@ async function reportAllDamsStatus(chatId) {
   const objs = rows.map(rowToObj);
   const dams = getActiveDams();
   const kbkCfg = DAMS_CONFIG["KABEKI"];
+  const kbkStats = getKabekiStats(objs);
 
   if (!dams.length && !kbkCfg) {
     await send(
       chatId,
-      `📋 Chưa có đám nào được thiết lập trong Vụ mùa ${getSeasonDisplay()}.\nBấm "➕ Thêm/Sửa Đám & Lưới" để tạo đám nhanh nhé!`,
+      `📋 Chưa có đám nào được thiết lập trong Vụ mùa ${getSeasonDisplay()}.\nBấm "📊 THỐNG KÊ MÙA VỤ" -> "➕ Thêm/Sửa Đám" để tạo đám nhanh nhé!`,
       { reply_markup: buildMainKeyboard() }
     );
     return;
@@ -1514,14 +1572,7 @@ async function reportAllDamsStatus(chatId) {
     haThuyText = `🚢 Tàu hạ thủy: ${haThuyRow.date} (được ${kc} ngày)\n`;
   }
 
-  let kbkText = "";
-  if (kbkCfg) {
-    const duong = Number(kbkCfg.soDay || 0);
-    const kbkCount = Math.round((duong / KABEKI_MULTIPLIER) * 10) / 10;
-    kbkText = `🕸️ KHO KABEKI (Lưới 5): ${kbkCount} kabeki (= ${duong} đường lưới chờ tách)\n`;
-  }
-
-  let text = `🌊 TÌNH HÌNH CÁC ĐÁM - VỤ MÙA ${getSeasonDisplay()}\n${haThuyText}${kbkText}\n`;
+  let text = `🌊 TÌNH HÌNH CÁC ĐÁM - VỤ MÙA ${getSeasonDisplay()}\n${haThuyText}\n`;
 
   for (const dam of dams) {
     const cfg = DAMS_CONFIG[dam];
@@ -1541,8 +1592,6 @@ async function reportAllDamsStatus(chatId) {
 
     if (cfg.ngayTach) {
       text += `  • Tách lưới: ${cfg.ngayTach}\n`;
-    } else {
-      text += `  • Tách lưới: Chưa tách\n`;
     }
 
     if (cfg.ngayThuocCuoi) {
@@ -1562,6 +1611,23 @@ async function reportAllDamsStatus(chatId) {
       text += `  • Thu hoạch: Chưa cắt đợt nào\n`;
     }
     text += "\n";
+  }
+
+  // KABEKI đặt ở PHÍA DƯỚI CÙNG
+  if (kbkCfg) {
+    text += `----------------------------------\n`;
+    text += `🕸️ KABEKI (Lưới 5 - Chờ tách):\n`;
+    text += `  • Tổng thả biển (giữ nguyên): ${kbkStats.totalKbk} kabeki (= ${kbkStats.totalLines} đường lưới)\n`;
+    if (kbkStats.splitKbk > 0) {
+      text += `  • Đã tách: ${kbkStats.splitKbk} kabeki (chuyển ${kbkStats.movedLines} đường | ở lại gốc ${kbkStats.stayLines} đường)\n`;
+      text += `  • Chờ tách: ${kbkStats.remainKbk} kabeki\n`;
+    }
+    if (kbkCfg.ngayThuocCuoi) {
+      const kcThuocKbk = diffDays(kbkCfg.ngayThuocCuoi, ymd(kst()));
+      text += `  • Đi thuốc Kabeki gần nhất: ${kbkCfg.ngayThuocCuoi} (${kcThuocKbk} ngày trước)\n`;
+    } else {
+      text += `  • Đi thuốc Kabeki: Chưa đi thuốc\n`;
+    }
   }
 
   const inline_keyboard = [
@@ -1791,7 +1857,155 @@ async function sendHelp(chatId) {
   await send(chatId, text, { reply_markup: buildMainKeyboard() });
 }
 
-/* ================== QUẢN LÝ DELETE ================== */
+/* ================== QUẢN LÝ SỬA / XÓA NÂNG CAO ================== */
+const pendingEdit = new Map();
+function setPendingEdit(chatId, payload) {
+  pendingEdit.set(String(chatId), {
+    ...payload,
+    expiresAt: Date.now() + 5 * 60 * 1000,
+  });
+}
+function getPendingEdit(chatId) {
+  const p = pendingEdit.get(String(chatId));
+  if (!p) return null;
+  if (Date.now() > p.expiresAt) {
+    pendingEdit.delete(String(chatId));
+    return null;
+  }
+  return p;
+}
+function clearPendingEdit(chatId) {
+  pendingEdit.delete(String(chatId));
+}
+
+async function syncDamLatestDatesFromData(dam) {
+  const damU = String(dam || "").trim().toUpperCase();
+  if (!damU || damU === "TOÀN TÀU") return;
+  if (!DAMS_CONFIG[damU]) return;
+
+  const rows = await getSeasonDataRows();
+  const objs = sortByDateTs(rows.map(rowToObj)).filter((o) => o.bai === damU);
+
+  let latestThuoc = "";
+  let latestTach = "";
+  for (const o of objs) {
+    if (o.tinhHinh === "Đi thuốc" && o.date) latestThuoc = o.date;
+    if (o.tinhHinh && o.tinhHinh.includes("Tách") && o.date) latestTach = o.date;
+  }
+
+  await upsertDamConfig(damU, {
+    ngayThuocCuoi: latestThuoc,
+    ngayTach: latestTach,
+  });
+}
+
+async function showEditDeleteListMenu(chatId) {
+  const rows = await getSeasonDataRows();
+  const recent = [];
+  for (let i = rows.length - 1; i >= 0 && recent.length < 6; i--) {
+    const o = rowToObj(rows[i]);
+    if (o.ts || o.date || o.bai || o.tinhHinh) {
+      recent.push({ rowNum: 2 + i, o });
+    }
+  }
+
+  if (!recent.length) {
+    await send(chatId, "📋 Chưa có dữ liệu nào để sửa hoặc xóa.", {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
+
+  const inline_keyboard = recent.map(({ rowNum, o }, idx) => {
+    const extra = o.baoTau > 0 ? ` ${o.baoTau}b ${o.giaK}k` : "";
+    const label = `${idx + 1}. [${o.date}] ${o.tinhHinh} ${o.bai}${extra}`.slice(0, 58);
+    return [{ text: label, callback_data: `PICK_ROW:${rowNum}` }];
+  });
+
+  await send(
+    chatId,
+    "✏️ SỬA / 🗑️ XÓA DỮ LIỆU\nChọn 1 dòng bên dưới để sửa (ngày, bao, giá, dây) hoặc xóa:",
+    { reply_markup: { inline_keyboard } }
+  );
+}
+
+async function applyEditRowDate(rowNumber1Based, newDateYmd, chatId) {
+  const rows = await getSeasonDataRows();
+  const idx0 = rowNumber1Based - 2;
+  if (idx0 < 0 || idx0 >= rows.length || !rows[idx0]) {
+    await send(chatId, "⚠️ Không tìm thấy dòng cần sửa.", {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
+
+  const oldRow = [...rows[idx0]];
+  while (oldRow.length < 12) oldRow.push("");
+  oldRow[1] = newDateYmd; // Cột B: Date
+
+  await updateSeasonDataRow(rowNumber1Based, oldRow);
+  const o = rowToObj(oldRow);
+  await syncDamLatestDatesFromData(o.bai);
+
+  await send(
+    chatId,
+    `✅ ĐÃ CẬP NHẬT NGÀY THÀNH CÔNG!\n• Dòng: ${o.tinhHinh} ${o.bai}\n• Ngày mới: ${newDateYmd}`,
+    { reply_markup: buildMainKeyboard() }
+  );
+}
+
+async function applyEditRowWork(rowNumber1Based, parsed, chatId, userName) {
+  const rows = await getSeasonDataRows();
+  const idx0 = rowNumber1Based - 2;
+  if (idx0 < 0 || idx0 >= rows.length || !rows[idx0]) {
+    await send(chatId, "⚠️ Không tìm thấy dòng cần sửa.", {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
+
+  const oldObj = rowToObj(rows[idx0]);
+  const objs = rows.map(rowToObj);
+  const objsBefore = objs.filter((_, i) => i < idx0);
+
+  const damU = (parsed.bai || oldObj.bai).toUpperCase();
+  const dateYmd = parsed.dateToken
+    ? ymd(parseCustomDate(parsed.dateToken, true))
+    : oldObj.date;
+
+  const { max, newProgress, tinhHinh, vong } = buildWorkProgress({
+    allObjs: objsBefore,
+    bai: damU,
+    gDelta: parsed.gDelta,
+  });
+
+  const bc = baoChuan(parsed.b);
+  const won = bc * parsed.k * 1000;
+
+  const newRow = [
+    oldObj.ts || new Date().toISOString(),
+    dateYmd,
+    userName || oldObj.thu,
+    damU,
+    newProgress,
+    max,
+    tinhHinh,
+    parsed.b,
+    bc,
+    parsed.k,
+    won,
+    parsed.note || oldObj.note || "",
+  ];
+
+  await updateSeasonDataRow(rowNumber1Based, newRow);
+
+  await send(
+    chatId,
+    `✏️ ĐÃ SỬA LỆNH CẮT THÀNH CÔNG (Vòng ${vong}):\n📅 Ngày: ${dateYmd}\n📍 Bãi: ${damU}\n✂️ Tình hình: ${tinhHinh} (${newProgress}/${max} dây)\n📦 Sản lượng: ${parsed.b} bao (≈ ${bc} bao chuẩn)\n💰 Giá: ${parsed.k}k\n💵 THU: ${won.toLocaleString()} ₩`,
+    { reply_markup: buildMainKeyboard() }
+  );
+}
+
 function findLastRowIndexAny(rows) {
   for (let i = rows.length - 1; i >= 0; i--) {
     const o = rowToObj(rows[i]);
@@ -1902,7 +2116,137 @@ async function handleCallbackQuery(cb) {
   }
 
   if (data === "CANCEL_ACTION") {
+    clearPendingEdit(chatId);
     await send(chatId, "❌ Đã hủy thao tác.", {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
+
+  // Thống kê mùa vụ hub callbacks
+  if (data === "STATS:MONTH") return reportMonth(chatId);
+  if (data === "STATS:VONG") return reportByVong(chatId);
+  if (data === "STATS:SEASON") return reportSeasonTotal(chatId);
+  if (data === "STATS:COMMANDS") return reportCommandList(chatId);
+  if (data === "STATS:HELP") return sendHelp(chatId);
+  if (data === "STATS:HATHUY") return showHaThuyMenu(chatId);
+  if (data === "STATS:ADDDAM") return showAddDamMenu(chatId);
+
+  // Sửa / Xóa nâng cao callbacks
+  if (data === "SHOW:EDIT_LIST") return showEditDeleteListMenu(chatId);
+
+  if (data.startsWith("PICK_ROW:")) {
+    const rowNum = Number(data.split(":")[1]);
+    const rows = await getSeasonDataRows();
+    const idx0 = rowNum - 2;
+    if (idx0 < 0 || idx0 >= rows.length || !rows[idx0]) {
+      await send(chatId, "⚠️ Dòng này không còn tồn tại.", {
+        reply_markup: buildMainKeyboard(),
+      });
+      return;
+    }
+    const o = rowToObj(rows[idx0]);
+    const isCut = isWorkRow(o);
+    const inline_keyboard = [
+      [{ text: "📅 Sửa Ngày", callback_data: `EDIT_DATE_PICK:${rowNum}` }],
+    ];
+    if (isCut) {
+      inline_keyboard[0].push({
+        text: "📦 Sửa Bao / Giá / Dây",
+        callback_data: `EDIT_WORK_ASK:${rowNum}`,
+      });
+    }
+    inline_keyboard.push([
+      { text: "🗑️ Xóa dòng này", callback_data: `DEL_ROW_ASK:${rowNum}` },
+      { text: "⬅️ Quay lại", callback_data: "SHOW:EDIT_LIST" },
+    ]);
+
+    const detail = isCut
+      ? `${o.tinhHinh} ${o.bai} (${o.dayG}/${o.maxG} dây) - ${o.baoTau}b ${o.giaK}k`
+      : `${o.tinhHinh} ${o.bai} ${o.note ? `(${o.note})` : ""}`;
+
+    await send(
+      chatId,
+      `📌 ĐANG CHỌN DÒNG:\n📅 Ngày: ${o.date}\n📝 Nội dung: ${detail}\n\nBạn muốn làm gì với dòng này?`,
+      { reply_markup: { inline_keyboard } }
+    );
+    return;
+  }
+
+  if (data.startsWith("EDIT_DATE_PICK:")) {
+    const rowNum = Number(data.split(":")[1]);
+    setPendingEdit(chatId, { mode: "EDIT_DATE", rowNumber1Based: rowNum });
+    const inline_keyboard = [
+      [
+        { text: "Hôm nay", callback_data: `SET_DATE:${rowNum}:0` },
+        { text: "Hôm qua", callback_data: `SET_DATE:${rowNum}:1` },
+        { text: "Hôm kia", callback_data: `SET_DATE:${rowNum}:2` },
+      ],
+      [{ text: "❌ Hủy", callback_data: "CANCEL_ACTION" }],
+    ];
+    await send(
+      chatId,
+      "📅 CHỌN NGÀY MỚI:\nBấm nhanh bên dưới hoặc gõ ngày mới vào ô chat (VD: 15/11 hoặc 15d):",
+      { reply_markup: { inline_keyboard } }
+    );
+    return;
+  }
+
+  if (data.startsWith("SET_DATE:")) {
+    const parts = data.split(":");
+    const rowNum = Number(parts[1]);
+    const daysAgo = Number(parts[2] || 0);
+    clearPendingEdit(chatId);
+    const d = new Date(kst().getTime() - daysAgo * 86400000);
+    await applyEditRowDate(rowNum, ymd(d), chatId);
+    return;
+  }
+
+  if (data.startsWith("EDIT_WORK_ASK:")) {
+    const rowNum = Number(data.split(":")[1]);
+    const rows = await getSeasonDataRows();
+    const o = rowToObj(rows[rowNum - 2]);
+    setPendingEdit(chatId, {
+      mode: "EDIT_WORK",
+      rowNumber1Based: rowNum,
+      bai: o.bai,
+      dateYmd: o.date,
+    });
+    await send(
+      chatId,
+      `✏️ SỬA LỆNH CẮT (${o.bai} - ${o.date})\nNhập số liệu mới vào ô chat (không cần gõ lại tên bãi nếu không đổi):\n• VD cắt sạch: 50b 220k\n• VD cắt dỡ: 30g 40b 210k`,
+      {
+        reply_markup: {
+          inline_keyboard: [[{ text: "❌ Hủy", callback_data: "CANCEL_ACTION" }]],
+        },
+      }
+    );
+    return;
+  }
+
+  if (data.startsWith("DEL_ROW_ASK:")) {
+    const rowNum = Number(data.split(":")[1]);
+    await send(chatId, "⚠️ Bạn chắc chắn muốn XÓA dòng này chứ?", {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "✅ XÁC NHẬN XÓA", callback_data: `DEL_ROW_DO:${rowNum}` },
+            { text: "❌ Hủy", callback_data: "CANCEL_ACTION" },
+          ],
+        ],
+      },
+    });
+    return;
+  }
+
+  if (data.startsWith("DEL_ROW_DO:")) {
+    const rowNum = Number(data.split(":")[1]);
+    const rows = await getSeasonDataRows();
+    const idx0 = rowNum - 2;
+    const oldBai = idx0 >= 0 && rows[idx0] ? rowToObj(rows[idx0]).bai : "";
+    await clearSeasonDataRow(rowNum);
+    if (oldBai) await syncDamLatestDatesFromData(oldBai);
+    await send(chatId, "✅ Đã xóa dòng vừa chọn thành công!", {
       reply_markup: buildMainKeyboard(),
     });
     return;
@@ -1934,7 +2278,9 @@ async function handleTextMessage(msg) {
       });
       return;
     }
+    const oldBai = rowToObj(rows[idx - 2]).bai;
     await clearSeasonDataRow(idx);
+    if (oldBai) await syncDamLatestDatesFromData(oldBai);
     await send(chatId, "✅ Đã xóa dòng gần nhất.", {
       reply_markup: buildMainKeyboard(),
     });
@@ -1942,12 +2288,35 @@ async function handleTextMessage(msg) {
   }
 
   // ====== NÚT BẤM MENU DƯỚI KHUNG CHAT ======
+  const menuButtons = new Set([
+    "/start",
+    "📋 Tình hình các đám",
+    "📆 Lịch cắt các đám",
+    "💊 Ghi nhận ĐI THUỐC",
+    "🕸️ Ghi nhận TÁCH LƯỚI",
+    "📊 THỐNG KÊ MÙA VỤ",
+    "✏️ Sửa / 🗑️ Xóa dữ liệu",
+    "📅 Thống kê tháng này",
+    "🔁 Thống kê theo VÒNG",
+    "💰 TỔNG THU VỤ MÙA",
+    "📋 Lệnh cắt đã gửi",
+    "📂 XEM DỮ LIỆU VỤ CŨ",
+    "ℹ️ Hướng dẫn cú pháp",
+    "🚢 Mốc Hạ thủy / Thả lưới",
+    "🌀 Tránh bão / Nghỉ gió",
+    "➕ Thêm/Sửa Đám & Lưới",
+  ]);
+
+  if (menuButtons.has(textRaw)) {
+    clearPendingEdit(chatId);
+  }
+
   if (textRaw === "/start") {
     await send(
       chatId,
       `🌊 SỔ KIM SẴN SÀNG - VỤ MÙA ${getSeasonDisplay()}!\nĐã tải ${
-        Object.keys(DAMS_CONFIG).length
-      } đám cấu hình.\nBấm nút menu bên dưới để thao tác nhanh một chạm.`,
+        getActiveDams().length
+      } bãi cắt + kho Kabeki.\nBấm biểu tượng ô vuông ⊞ bên cạnh ô chat để mở menu khi cần (menu tự ẩn để dễ đọc).`,
       { reply_markup: buildMainKeyboard() }
     );
     return;
@@ -1955,19 +2324,45 @@ async function handleTextMessage(msg) {
 
   if (textRaw === "📋 Tình hình các đám") return reportAllDamsStatus(chatId);
   if (textRaw === "📆 Lịch cắt các đám") return reportCutSchedule(chatId);
+  if (textRaw === "💊 Ghi nhận ĐI THUỐC") return showThuocMenu(chatId);
+  if (textRaw === "🕸️ Ghi nhận TÁCH LƯỚI") return showTachLuoiMenu(chatId);
+  if (textRaw === "📊 THỐNG KÊ MÙA VỤ") return showStatsHubMenu(chatId);
+  if (textRaw === "✏️ Sửa / 🗑️ Xóa dữ liệu") return showEditDeleteListMenu(chatId);
+
+  // Vẫn hỗ trợ nếu bấm/gõ tên nút cũ
   if (textRaw === "📅 Thống kê tháng này") return reportMonth(chatId);
   if (textRaw === "🔁 Thống kê theo VÒNG") return reportByVong(chatId);
   if (textRaw === "💰 TỔNG THU VỤ MÙA") return reportSeasonTotal(chatId);
   if (textRaw === "📋 Lệnh cắt đã gửi") return reportCommandList(chatId);
   if (textRaw === "📂 XEM DỮ LIỆU VỤ CŨ") return reportLegacySeason(chatId);
   if (textRaw === "ℹ️ Hướng dẫn cú pháp") return sendHelp(chatId);
-
-  // Mở menu nút bấm inline tương ứng
-  if (textRaw === "💊 Ghi nhận ĐI THUỐC") return showThuocMenu(chatId);
-  if (textRaw === "🕸️ Ghi nhận TÁCH LƯỚI") return showTachLuoiMenu(chatId);
   if (textRaw === "🚢 Mốc Hạ thủy / Thả lưới") return showHaThuyMenu(chatId);
   if (textRaw === "🌀 Tránh bão / Nghỉ gió") return showNghiBienMenu(chatId);
   if (textRaw === "➕ Thêm/Sửa Đám & Lưới") return showAddDamMenu(chatId);
+
+  // ====== XỬ LÝ TRẠNG THÁI CHỜ SỬA (PENDING EDIT) ======
+  const pEdit = getPendingEdit(chatId);
+  if (pEdit) {
+    if (pEdit.mode === "EDIT_DATE") {
+      const d = parseCustomDate(textRaw, false);
+      clearPendingEdit(chatId);
+      return applyEditRowDate(pEdit.rowNumber1Based, ymd(d), chatId);
+    }
+    if (pEdit.mode === "EDIT_WORK") {
+      const candidate = /^\d/.test(textRaw) ? `${pEdit.bai} ${textRaw}` : textRaw;
+      const parsedEdit = parseWorkLine(candidate);
+      if (!parsedEdit || parsedEdit.type !== "WORK") {
+        await send(
+          chatId,
+          `❌ Cú pháp sửa chưa đúng. Hãy nhập dạng: 50b 220k hoặc 30g 40b 210k`,
+          { reply_markup: buildMainKeyboard() }
+        );
+        return;
+      }
+      clearPendingEdit(chatId);
+      return applyEditRowWork(pEdit.rowNumber1Based, parsedEdit, chatId, userName);
+    }
+  }
 
   if (textRaw === "✏️ Sửa dòng gần nhất") {
     await send(
