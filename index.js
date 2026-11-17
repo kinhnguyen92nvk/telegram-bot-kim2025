@@ -418,8 +418,17 @@ async function getSeasonDataRows(forceRefresh = false) {
     });
     cachedDataRows = r.data.values || [];
 
-    // Tự động nạp dữ liệu lịch sử thực tế 06/10 -> 17/11/2026 nếu tab DATA_2026_2027 đang trống
-    if (seasonKey === "2026_2027" && cachedDataRows.length === 0) {
+    // Nếu vụ 2026_2027 chưa có dữ liệu chính thức (chưa có dòng Hạ thủy 2026-10-06):
+    // Xóa các dòng test cũ của năm nay (giữ nguyên tab DATA/CONFIG năm ngoái) và nạp chuẩn 17 dòng thực tế
+    const hasOfficialSeed = cachedDataRows.some(
+      (row) => row?.[1] === "2026-10-06" && row?.[6] === "Hạ thủy"
+    );
+
+    if (seasonKey === "2026_2027" && !hasOfficialSeed) {
+      await sheets.spreadsheets.values.clear({
+        spreadsheetId: GOOGLE_SHEET_ID,
+        range: `${dataName}!A2:L`,
+      });
       await sheets.spreadsheets.values.update({
         spreadsheetId: GOOGLE_SHEET_ID,
         range: `${dataName}!A2:L${1 + INITIAL_DATA_SEED_2026.length}`,
@@ -428,9 +437,12 @@ async function getSeasonDataRows(forceRefresh = false) {
       });
       cachedDataRows = INITIAL_DATA_SEED_2026.map((row) => [...row]);
 
-      // Đồng bộ lại CONFIG_2026_2027 để đảm bảo ngày thả & ngày thuốc mới nhất khớp 100%
       const cfgName = getConfigSheetName(seasonKey);
       await ensureSheetWithHeader(cfgName, CONFIG_HEADERS);
+      await sheets.spreadsheets.values.clear({
+        spreadsheetId: GOOGLE_SHEET_ID,
+        range: `${cfgName}!A2:G`,
+      });
       await sheets.spreadsheets.values.update({
         spreadsheetId: GOOGLE_SHEET_ID,
         range: `${cfgName}!A2:G${1 + INITIAL_SEASON_SEED.length}`,
@@ -438,7 +450,7 @@ async function getSeasonDataRows(forceRefresh = false) {
         requestBody: { values: INITIAL_SEASON_SEED },
       });
       await loadConfigFromSheet();
-      console.log(`✅ Seeded 17 historical rows into ${dataName}`);
+      console.log(`✅ Reset & Seeded 17 official rows into ${dataName}`);
     }
 
     isDataLoaded = true;
@@ -609,9 +621,10 @@ async function send(chatId, text, extra = {}) {
 function buildMainKeyboard() {
   return {
     keyboard: [
-      [{ text: "📋 Tình hình các đám" }, { text: "📆 Lịch cắt các đám" }],
-      [{ text: "💊 Ghi nhận ĐI THUỐC" }, { text: "🕸️ Ghi nhận TÁCH LƯỚI" }],
-      [{ text: "📊 THỐNG KÊ MÙA VỤ" }, { text: "✏️ Sửa / 🗑️ Xóa dữ liệu" }],
+      [{ text: "📋 Tình hình các đám" }, { text: "💊 Tình hình đi thuốc" }],
+      [{ text: "📆 Lịch cắt các đám" }, { text: "💊 Ghi nhận ĐI THUỐC" }],
+      [{ text: "🕸️ Ghi nhận TÁCH LƯỚI" }, { text: "📊 THỐNG KÊ MÙA VỤ" }],
+      [{ text: "✏️ Sửa / 🗑️ Xóa dữ liệu" }],
     ],
     resize_keyboard: true,
     one_time_keyboard: true,
@@ -1760,6 +1773,104 @@ async function reportAllDamsStatus(chatId) {
   });
 }
 
+async function reportThuocStatus(chatId) {
+  const rows = await getSeasonDataRows();
+  const objs = sortByDateTs(rows.map(rowToObj));
+  const dams = getActiveDams();
+
+  if (!dams.length) {
+    await send(chatId, "💊 Chưa có bãi/đám nào để theo dõi đi thuốc.", {
+      reply_markup: buildMainKeyboard(),
+    });
+    return;
+  }
+
+  let text = `💊 TÌNH HÌNH ĐI THUỐC CÁC ĐÁM - VỤ ${getSeasonDisplay()}\n\n`;
+  const todayYmd = ymd(kst());
+
+  for (const dam of dams) {
+    const cfg = DAMS_CONFIG[dam];
+    const st = computeThuocState(objs, dam);
+    const thuocHistory = objs.filter((o) => o.bai === dam && isThuocRow(o));
+
+    text += `📍 Bãi ${dam} (${cfg?.soDay || st.max} đường):\n`;
+
+    if (st.progress > 0) {
+      text += `  • Trạng thái: ⏳ Đang đi dỡ ${st.progress}/${st.max} đường (còn ${st.remain}đ)\n`;
+    }
+
+    if (st.lastCleanDate || cfg?.ngayThuocCuoi) {
+      const lastD = st.lastCleanDate || cfg.ngayThuocCuoi;
+      const kc = diffDays(lastD, todayYmd);
+      text += `  • Đi thuốc sạch gần nhất: ${lastD} (${kc === 0 ? "Hôm nay" : `${kc} ngày trước`})\n`;
+    } else if (thuocHistory.length === 0) {
+      text += `  • Chưa đi thuốc lần nào\n`;
+    }
+
+    if (thuocHistory.length > 0) {
+      const recentList = thuocHistory
+        .slice(-5)
+        .map((o) => {
+          const ddmm = o.date ? `${o.date.slice(8, 10)}/${o.date.slice(5, 7)}` : "";
+          return o.tinhHinh === "Đi thuốc dỡ" ? `${ddmm}(dỡ ${o.dayG}đ)` : ddmm;
+        })
+        .join(" → ");
+      text += `  • Lịch sử gần đây: ${recentList}\n`;
+    }
+    text += "\n";
+  }
+
+  const inline_keyboard = [
+    [
+      { text: "💊 Ghi nhận ĐI THUỐC ngay", callback_data: "SHOW:THUOC_MENU" },
+      { text: "✏️ Sửa ngày đi thuốc", callback_data: "SHOW:EDIT_LIST" },
+    ],
+  ];
+
+  await send(chatId, text.trim(), { reply_markup: { inline_keyboard } });
+}
+
+function buildCalendarKeyboard(rowNum, year, month) {
+  // month: 1..12
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const prevM = month === 1 ? 12 : month - 1;
+  const prevY = month === 1 ? year - 1 : year;
+  const nextM = month === 12 ? 1 : month + 1;
+  const nextY = month === 12 ? year + 1 : year;
+
+  const today = kst();
+  const todayY = today.getUTCFullYear();
+  const todayM = today.getUTCMonth() + 1;
+  const todayD = today.getUTCDate();
+
+  const inline_keyboard = [
+    [
+      { text: "⬅️ Tháng trước", callback_data: `CAL_VIEW:${rowNum}:${prevY}:${prevM}` },
+      { text: `📅 Tháng ${String(month).padStart(2, "0")}/${year}`, callback_data: "NOOP" },
+      { text: "Tháng sau ➡️", callback_data: `CAL_VIEW:${rowNum}:${nextY}:${nextM}` },
+    ],
+  ];
+
+  let row = [];
+  for (let d = 1; d <= daysInMonth; d++) {
+    const isToday = year === todayY && month === todayM && d === todayD;
+    const label = isToday ? `[${d}]` : String(d).padStart(2, "0");
+    const ymdVal = `${year}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    row.push({ text: label, callback_data: `CAL_PICK:${rowNum}:${ymdVal}` });
+    if (row.length === 7) {
+      inline_keyboard.push(row);
+      row = [];
+    }
+  }
+  if (row.length > 0) inline_keyboard.push(row);
+
+  inline_keyboard.push([
+    { text: "❌ Hủy", callback_data: "CANCEL_ACTION" },
+  ]);
+
+  return { inline_keyboard };
+}
+
 async function reportCutSchedule(chatId) {
   const rows = await getSeasonDataRows();
   const objs = rows.map(rowToObj);
@@ -2337,22 +2448,41 @@ async function handleCallbackQuery(cb) {
     return;
   }
 
+  if (data === "NOOP") return;
+
   if (data.startsWith("EDIT_DATE_PICK:")) {
     const rowNum = Number(data.split(":")[1]);
     setPendingEdit(chatId, { mode: "EDIT_DATE", rowNumber1Based: rowNum });
-    const inline_keyboard = [
-      [
-        { text: "Hôm nay", callback_data: `SET_DATE:${rowNum}:0` },
-        { text: "Hôm qua", callback_data: `SET_DATE:${rowNum}:1` },
-        { text: "Hôm kia", callback_data: `SET_DATE:${rowNum}:2` },
-      ],
-      [{ text: "❌ Hủy", callback_data: "CANCEL_ACTION" }],
-    ];
+    const now = kst();
+    const cal = buildCalendarKeyboard(rowNum, now.getUTCFullYear(), now.getUTCMonth() + 1);
     await send(
       chatId,
-      "📅 CHỌN NGÀY MỚI:\nBấm nhanh bên dưới hoặc gõ ngày mới vào ô chat (VD: 15/11 hoặc 15d):",
-      { reply_markup: { inline_keyboard } }
+      "📅 CHỌN NGÀY MỚI TRÊN LỊCH:\nBấm thẳng vào ngày bạn muốn sửa (hoặc đổi tháng bằng nút ⬅️ / ➡️):",
+      { reply_markup: cal }
     );
+    return;
+  }
+
+  if (data.startsWith("CAL_VIEW:")) {
+    const parts = data.split(":");
+    const rowNum = Number(parts[1]);
+    const y = Number(parts[2]);
+    const m = Number(parts[3]);
+    const cal = buildCalendarKeyboard(rowNum, y, m);
+    await tg("editMessageReplyMarkup", {
+      chat_id: chatId,
+      message_id: cb.message?.message_id,
+      reply_markup: cal,
+    });
+    return;
+  }
+
+  if (data.startsWith("CAL_PICK:")) {
+    const parts = data.split(":");
+    const rowNum = Number(parts[1]);
+    const pickedYmd = parts[2];
+    clearPendingEdit(chatId);
+    await applyEditRowDate(rowNum, pickedYmd, chatId);
     return;
   }
 
@@ -2455,6 +2585,7 @@ async function handleTextMessage(msg) {
   const menuButtons = new Set([
     "/start",
     "📋 Tình hình các đám",
+    "💊 Tình hình đi thuốc",
     "📆 Lịch cắt các đám",
     "💊 Ghi nhận ĐI THUỐC",
     "🕸️ Ghi nhận TÁCH LƯỚI",
@@ -2487,6 +2618,7 @@ async function handleTextMessage(msg) {
   }
 
   if (textRaw === "📋 Tình hình các đám") return reportAllDamsStatus(chatId);
+  if (textRaw === "💊 Tình hình đi thuốc") return reportThuocStatus(chatId);
   if (textRaw === "📆 Lịch cắt các đám") return reportCutSchedule(chatId);
   if (textRaw === "💊 Ghi nhận ĐI THUỐC") return showThuocMenu(chatId);
   if (textRaw === "🕸️ Ghi nhận TÁCH LƯỚI") return showTachLuoiMenu(chatId);
