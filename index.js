@@ -1622,51 +1622,60 @@ Chọn tình hình hôm nay:
 }
 
 async function showHaThuyMenu(chatId) {
+  const rows = await getSeasonDataRows();
+  const objs = sortByDateTs(rows.map(rowToObj));
+
+  const haThuy = objs.find((o) => o.tinhHinh === "Hạ thủy");
+  const cotHau = objs.filter((o) => o.tinhHinh === "Cột hàu");
+  const thaRows = objs.filter(
+    (o) => o.tinhHinh === "Thả lưới" || o.tinhHinh === "Thả thêm lưới"
+  );
+
+  let info = `🚢 MỐC HẠ THỦY & THẢ LƯỚI (VỤ ${getSeasonDisplay()})\n\n`;
+  info += `• Tàu hạ thủy: ${haThuy ? haThuy.date : "Chưa ghi nhận"}\n`;
+  info += `• Cột hàu: ${cotHau.length ? cotHau.map((r) => r.date).join(", ") : "Chưa ghi nhận"}\n\n`;
+
+  info += `⚓ LỊCH SỬ THẢ LƯỚI ĐÃ GHI:\n`;
+  if (thaRows.length) {
+    thaRows.forEach((r) => {
+      info += `  • ${r.date}: ${r.bai} (${r.dayG}đ) — ${r.note || ""}\n`;
+    });
+  } else {
+    info += `  (Chưa có lịch sử thả lưới)\n`;
+  }
+
+  info += `\n💡 Để ghi thêm đợt thả mới:\n  Gõ: tha luoi <Đám> <Loại: nm/tn/so> <SốĐường> [Ngày]\n  Hoặc: tha them <Đám> <SốĐường> [Loại]`;
+
   const inline_keyboard = [
-    [{ text: "🚢 Tàu Hạ Thủy Hôm Nay", callback_data: "HATHUY:TODAY" }],
-    [
-      { text: "⚓ Thả Đám A (Nhà Máy 180d)", callback_data: "THA:A:NM" },
-      { text: "⚓ Thả Đám B (Nhà Máy 180d)", callback_data: "THA:B:NM" },
-    ],
-    [
-      { text: "⚓ Thả Đám C (Nhà Máy 180d)", callback_data: "THA:C:NM" },
-      { text: "⚓ Thả Đám D (Nhà Máy 180d)", callback_data: "THA:D:NM" },
-    ],
+    [{ text: "🚢 Ghi nhận Tàu Hạ Thủy Hôm Nay", callback_data: "HATHUY:TODAY" }],
+    [{ text: "📖 Xem Tổng quan & Kabeki", callback_data: "STATS:OVERVIEW" }],
   ];
 
-  const text =
-`🚢 MỐC HẠ THỦY & THẢ LƯỚI
-Bấm nút bên dưới để ghi nhận ngay hôm nay:
-(Hoặc gõ: "tha luoi B tn 70" nếu là lưới tự nhiên / sò)`;
-
-  await send(chatId, text, { reply_markup: { inline_keyboard } });
+  await send(chatId, info.trim(), { reply_markup: { inline_keyboard } });
 }
 
 async function showAddDamMenu(chatId) {
-  const inline_keyboard = [
-    [
-      { text: "➕ Thêm Đám A (180d)", callback_data: "ADD_DAM:A:180" },
-      { text: "➕ Thêm Đám B (180d)", callback_data: "ADD_DAM:B:180" },
-    ],
-    [
-      { text: "➕ Thêm Đám C (180d)", callback_data: "ADD_DAM:C:180" },
-      { text: "➕ Thêm Đám D (180d)", callback_data: "ADD_DAM:D:180" },
-    ],
-    [
-      { text: "➕ Thêm Đám E (180d)", callback_data: "ADD_DAM:E:180" },
-      { text: "➕ Thêm Đám F (180d)", callback_data: "ADD_DAM:F:180" },
-    ],
-  ];
+  const dams = getActiveDams();
+  let listText = "";
+  for (const d of dams) {
+    const cfg = DAMS_CONFIG[d];
+    listText += `• ${d}: ${cfg.soDay} đường (${cfg.loaiLuoi})\n`;
+  }
 
   const text =
-`⚙️ THÊM / CÀI ĐẶT ĐÁM
-• Bấm nút trên để tạo nhanh đám Nhà Máy 180 dây.
-• Hoặc gõ lệnh:
-  them dam <Tên> <Loại: nm/tn/so> [SốDây]
-  Ví dụ: them dam B tn 75 (Lưới tự nhiên 75 dây)
-  Ví dụ: sua day A 185 (Sửa số dây)`;
+`⚙️ QUẢN LÝ ĐÁM & SỐ ĐƯỜNG (VỤ ${getSeasonDisplay()})
 
-  await send(chatId, text, { reply_markup: { inline_keyboard } });
+📋 Các bãi đang có:
+${listText || "(Chưa có bãi nào)"}
+👉 Cú pháp thêm bãi mới:
+  them dam <TênBãi> <Loại: nm/tn/so> <SốĐường>
+  (VD: them dam B24 tn 40)
+
+👉 Cú pháp sửa số đường:
+  sua day <TênBãi> <SốĐườngMới>
+  (VD: sua day A22 57)`;
+
+  await send(chatId, text.trim(), { reply_markup: buildMainKeyboard() });
 }
 
 /* ================== THỐNG KÊ & BÁO CÁO ================== */
