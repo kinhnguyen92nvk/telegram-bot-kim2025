@@ -46,41 +46,61 @@ const KABEKI_MULTIPLIER = 5; // 1 đường kabeki = 5 đường lưới đơn
 
 const INITIAL_SEASON_SEED = [
   [
+    "A27",
+    "Lưới Sò/Hàu (50 to, 3 nhỏ)",
+    57,
+    "2026-10-10",
+    "",
+    "2026-11-16",
+    "Tổng bãi 57 đường | Đã thả 57/57 (10-13/10)",
+  ],
+  [
+    "A22",
+    "36 Nhà Máy + 3 Hàu/Sò",
+    39,
+    "2026-10-13",
+    "",
+    "2026-11-17",
+    "Tổng bãi 57 đường | Đã thả 39/57 (3 sò + 36 nhà máy, còn trống 18)",
+  ],
+  [
+    "A14",
+    "Lưới Tự Nhiên",
+    30,
+    "2026-10-26",
+    "",
+    "",
+    "Tổng bãi chưa chốt | Đang thả 30 đường (26-27/10)",
+  ],
+  [
     "KABEKI",
     "Kabeki (Lưới 5)",
     630,
     "",
     "",
     "",
-    "126 kabeki x 5 = 630 đường lưới chờ tách",
+    "Tổng gốc 126 kabeki x 5 = 630 đường lưới chờ tách",
   ],
-  [
-    "A27",
-    "Lưới Sò/Hàu (50 to, 3 nhỏ)",
-    57,
-    "",
-    "",
-    "",
-    "Tổng bãi 57 đường | Đã thả 57/57 đường",
-  ],
-  [
-    "A22",
-    "36 Nhà Máy + 3 Hàu/Sò",
-    39,
-    "",
-    "",
-    "",
-    "Tổng bãi 57 đường | Đã thả 39/57 (còn trống 18 đường)",
-  ],
-  [
-    "A14",
-    "Lưới Tự Nhiên",
-    30,
-    "",
-    "",
-    "",
-    "Tổng bãi chưa chốt | Đang thả 30 đường",
-  ],
+];
+
+const INITIAL_DATA_SEED_2026 = [
+  ["2026-10-06T00:00:00.000Z", "2026-10-06", "Hệ thống", "TOÀN TÀU", 0, 0, "Hạ thủy", 0, 0, 0, 0, "Hạ thủy tàu đầu vụ 2026-2027"],
+  ["2026-10-10T00:00:00.000Z", "2026-10-10", "Hệ thống", "A27", 17, 57, "Thả lưới", 0, 0, 0, 0, "Thả 17 đường lưới Sò/Hàu"],
+  ["2026-10-11T00:00:00.000Z", "2026-10-11", "Hệ thống", "A27", 15, 57, "Thả lưới", 0, 0, 0, 0, "Thả 15 đường lưới Sò/Hàu"],
+  ["2026-10-12T00:00:00.000Z", "2026-10-12", "Hệ thống", "A27", 15, 57, "Thả lưới", 0, 0, 0, 0, "Thả 15 đường lưới Sò/Hàu"],
+  ["2026-10-13T00:00:00.000Z", "2026-10-13", "Hệ thống", "A27", 10, 57, "Thả lưới", 0, 0, 0, 0, "Thả 10 đường (tổng A27 đủ 57 đường)"],
+  ["2026-10-13T00:00:00.000Z", "2026-10-13", "Hệ thống", "A22", 3, 39, "Thả lưới", 0, 0, 0, 0, "3 đường Sò/Hàu đưa từ A27 sang A22"],
+  ["2026-10-19T00:00:00.000Z", "2026-10-19", "Hệ thống", "TOÀN TÀU", 0, 0, "Cột hàu", 0, 0, 0, 0, "Cột hàu ngày 1"],
+  ["2026-10-20T00:00:00.000Z", "2026-10-20", "Hệ thống", "TOÀN TÀU", 0, 0, "Cột hàu", 0, 0, 0, 0, "Cột hàu ngày 2"],
+  ["2026-10-22T00:00:00.000Z", "2026-10-22", "Hệ thống", "A22", 18, 39, "Thả lưới", 0, 0, 0, 0, "Thả 18 đường lưới Nhà Máy"],
+  ["2026-10-23T00:00:00.000Z", "2026-10-23", "Hệ thống", "A22", 18, 39, "Thả lưới", 0, 0, 0, 0, "Thả 18 đường lưới Nhà Máy (tổng A22: 39 đường)"],
+  ["2026-10-26T00:00:00.000Z", "2026-10-26", "Hệ thống", "A14", 15, 30, "Thả lưới", 0, 0, 0, 0, "Thả 15 đường lưới Tự Nhiên"],
+  ["2026-10-27T00:00:00.000Z", "2026-10-27", "Hệ thống", "A14", 15, 30, "Thả lưới", 0, 0, 0, 0, "Thả 15 đường lưới Tự Nhiên (tổng A14: 30 đường)"],
+  ["2026-11-07T00:00:00.000Z", "2026-11-07", "Hệ thống", "A22", 39, 39, "Đi thuốc sạch", 0, 0, 0, 0, "Đi thuốc đám A22 (lần đầu)"],
+  ["2026-11-10T00:00:00.000Z", "2026-11-10", "Hệ thống", "A27", 57, 57, "Đi thuốc sạch", 0, 0, 0, 0, "Đi thuốc đám A27 (lần đầu)"],
+  ["2026-11-12T00:00:00.000Z", "2026-11-12", "Hệ thống", "A22", 39, 39, "Đi thuốc sạch", 0, 0, 0, 0, "Đi thuốc đám A22 (cách lần trước 5 ngày)"],
+  ["2026-11-16T00:00:00.000Z", "2026-11-16", "Hệ thống", "A27", 57, 57, "Đi thuốc sạch", 0, 0, 0, 0, "Đi thuốc đám A27 (cách lần trước 6 ngày)"],
+  ["2026-11-17T00:00:00.000Z", "2026-11-17", "Hệ thống", "A22", 39, 39, "Đi thuốc sạch", 0, 0, 0, 0, "Đi thuốc đám A22 (cách lần trước 5 ngày)"],
 ];
 
 /* ================== TIME (KST / UTC+9) ================== */
@@ -397,6 +417,30 @@ async function getSeasonDataRows(forceRefresh = false) {
       range: `${dataName}!A2:L`,
     });
     cachedDataRows = r.data.values || [];
+
+    // Tự động nạp dữ liệu lịch sử thực tế 06/10 -> 17/11/2026 nếu tab DATA_2026_2027 đang trống
+    if (seasonKey === "2026_2027" && cachedDataRows.length === 0) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: GOOGLE_SHEET_ID,
+        range: `${dataName}!A2:L${1 + INITIAL_DATA_SEED_2026.length}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: INITIAL_DATA_SEED_2026 },
+      });
+      cachedDataRows = INITIAL_DATA_SEED_2026.map((row) => [...row]);
+
+      // Đồng bộ lại CONFIG_2026_2027 để đảm bảo ngày thả & ngày thuốc mới nhất khớp 100%
+      const cfgName = getConfigSheetName(seasonKey);
+      await ensureSheetWithHeader(cfgName, CONFIG_HEADERS);
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: GOOGLE_SHEET_ID,
+        range: `${cfgName}!A2:G${1 + INITIAL_SEASON_SEED.length}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: INITIAL_SEASON_SEED },
+      });
+      await loadConfigFromSheet();
+      console.log(`✅ Seeded 17 historical rows into ${dataName}`);
+    }
+
     isDataLoaded = true;
     return cachedDataRows;
   } catch (e) {
@@ -1112,35 +1156,99 @@ ${kcNgay ? `⏱️ Thời gian: ${kcNgay}` : ""}`.trim();
   await send(chatId, text, { reply_markup: buildMainKeyboard() });
 }
 
-async function recordDiThuoc(damList, dateObj, chatId, userName) {
+function isThuocRow(o) {
+  return (
+    o.tinhHinh === "Đi thuốc" ||
+    o.tinhHinh === "Đi thuốc sạch" ||
+    o.tinhHinh === "Đi thuốc dỡ"
+  );
+}
+
+function computeThuocState(allObjs, dam) {
+  const damU = String(dam || "").toUpperCase();
+  const cfg = DAMS_CONFIG[damU] || {};
+  const max = Number(cfg.soDay || MAX_DAY[damU] || 60);
+
+  const sorted = sortByDateTs(allObjs).filter(
+    (o) => o.bai === damU && isThuocRow(o)
+  );
+
+  let progress = 0;
+  let lastCleanDate = "";
+  let lastAnyDate = "";
+
+  for (const o of sorted) {
+    lastAnyDate = o.date || lastAnyDate;
+    if (
+      o.tinhHinh === "Đi thuốc" ||
+      o.tinhHinh === "Đi thuốc sạch" ||
+      (o.dayG >= max && max > 0)
+    ) {
+      progress = 0; // hoàn thành lượt thuốc, reset cho lượt tiếp theo
+      lastCleanDate = o.date || lastCleanDate;
+    } else {
+      progress = Math.min(max, Number(o.dayG || 0));
+    }
+  }
+
+  return {
+    dam: damU,
+    max,
+    progress,
+    remain: Math.max(0, max - progress),
+    lastCleanDate,
+    lastAnyDate,
+  };
+}
+
+async function recordDiThuoc(damList, dateObj, chatId, userName, gDelta = null) {
   const dateYmd = ymd(dateObj);
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
   const reportItems = [];
 
   for (const dam of damList) {
     const damU = dam.toUpperCase();
     const cfg = DAMS_CONFIG[damU] || {};
-    let kcMsg = "";
+    const st = computeThuocState(objs, damU);
+    const max = st.max;
 
-    if (cfg.ngayThuocCuoi) {
-      const kc = diffDays(cfg.ngayThuocCuoi, dateYmd);
-      kcMsg = `Cách lần trước ${kc} ngày (lần trước: ${cfg.ngayThuocCuoi})`;
-    } else if (cfg.ngayTha) {
-      const kc = diffDays(cfg.ngayTha, dateYmd);
-      kcMsg = `Đi thuốc lần đầu (sau thả ${kc} ngày)`;
+    let newProgress;
+    let tinhHinh;
+
+    if (!gDelta) {
+      newProgress = max;
+      tinhHinh = "Đi thuốc sạch";
     } else {
-      kcMsg = "Ghi nhận đi thuốc";
+      newProgress = Math.min(max, st.progress + Number(gDelta));
+      tinhHinh = newProgress >= max ? "Đi thuốc sạch" : "Đi thuốc dỡ";
     }
 
-    await upsertDamConfig(damU, { ngayThuocCuoi: dateYmd });
+    let kcMsg = "";
+    if (tinhHinh === "Đi thuốc sạch") {
+      if (st.lastCleanDate) {
+        const kc = diffDays(st.lastCleanDate, dateYmd);
+        kcMsg = `Đi sạch (${newProgress}/${max}đ) - Cách lần trước ${kc} ngày (${st.lastCleanDate})`;
+      } else if (cfg.ngayTha) {
+        const kc = diffDays(cfg.ngayTha, dateYmd);
+        kcMsg = `Đi sạch (${newProgress}/${max}đ) - Lần đầu (sau thả ${kc} ngày)`;
+      } else {
+        kcMsg = `Đi sạch (${newProgress}/${max}đ)`;
+      }
+      await upsertDamConfig(damU, { ngayThuocCuoi: dateYmd });
+    } else {
+      const remain = Math.max(0, max - newProgress);
+      kcMsg = `Đi dỡ ${newProgress}/${max}đ (còn ${remain}đ chưa đi)`;
+    }
 
     await appendSeasonDataRow([
       new Date().toISOString(),
       dateYmd,
       userName,
       damU,
-      0,
-      cfg.soDay || 0,
-      "Đi thuốc",
+      newProgress,
+      max,
+      tinhHinh,
       0,
       0,
       0,
@@ -1148,7 +1256,7 @@ async function recordDiThuoc(damList, dateObj, chatId, userName) {
       kcMsg,
     ]);
 
-    reportItems.push(`• Đám ${damU} (${cfg.loaiLuoi || "Lưới"}): ${kcMsg}`);
+    reportItems.push(`• Bãi ${damU}: ${kcMsg}`);
   }
 
   const text =
@@ -1398,40 +1506,37 @@ async function recordThaThem(dam, addDay, loaiStr, dateObj, chatId, userName) {
 
 async function showThuocMenu(chatId) {
   const dams = getActiveDams();
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
   const inline_keyboard = [];
 
-  // Nút đi thuốc riêng cho KABEKI (Lưới 5)
-  inline_keyboard.push([
-    { text: "💊 Đi thuốc KABEKI (Lưới 5)", callback_data: "THUOC:KABEKI" },
-  ]);
-
-  // Tạo hàng nút cho từng bãi thu hoạch
   for (let i = 0; i < dams.length; i += 2) {
-    const row = [
-      { text: `💊 Bãi ${dams[i]}`, callback_data: `THUOC:${dams[i]}` },
-    ];
+    const d1 = dams[i];
+    const st1 = computeThuocState(objs, d1);
+    const label1 =
+      st1.progress > 0 ? `💊 ${d1} (dỡ ${st1.progress}/${st1.max})` : `💊 Bãi ${d1} (${st1.max}đ)`;
+    const row = [{ text: label1, callback_data: `THUOC_PICK:${d1}` }];
+
     if (dams[i + 1]) {
-      row.push({
-        text: `💊 Bãi ${dams[i + 1]}`,
-        callback_data: `THUOC:${dams[i + 1]}`,
-      });
+      const d2 = dams[i + 1];
+      const st2 = computeThuocState(objs, d2);
+      const label2 =
+        st2.progress > 0 ? `💊 ${d2} (dỡ ${st2.progress}/${st2.max})` : `💊 Bãi ${d2} (${st2.max}đ)`;
+      row.push({ text: label2, callback_data: `THUOC_PICK:${d2}` });
     }
     inline_keyboard.push(row);
   }
 
-  if (dams.length > 1) {
-    inline_keyboard.push([
-      { text: "💊 Đi thuốc TẤT CẢ các bãi cắt", callback_data: "THUOC:ALL" },
-    ]);
-  }
-
   const text =
-`💊 GHI NHẬN ĐI THUỐC (1 CHẠM)
-• Chọn 1 nút bên dưới để ghi nhận đi thuốc hôm nay.
-• Hoặc gõ ngày cụ thể: "thuoc A27 15/11" hay "thuoc KABEKI 15/11"`;
+`💊 GHI NHẬN ĐI THUỐC (GIỐNG CẮT KIM)
+• Bấm chọn bãi bên dưới để chọn **Đi sạch** hoặc **Đi dỡ số đường**.
+• Hoặc gõ nhanh:
+  - thuoc A27 (đi sạch A27 hôm nay)
+  - thuoc A27 30 (đi dỡ 30 đường hôm nay)
+  - thuoc A27 30g 15/11 (đi dỡ 30 đường ngày 15/11)`;
 
   await send(chatId, text, {
-    reply_markup: { inline_keyboard },
+    reply_markup: inline_keyboard.length ? { inline_keyboard } : undefined,
   });
 }
 
@@ -1566,17 +1671,23 @@ async function reportAllDamsStatus(chatId) {
   }
 
   const haThuyRow = objs.find((o) => o.tinhHinh === "Hạ thủy");
-  let haThuyText = "";
+  const cotHauRows = objs.filter((o) => o.tinhHinh === "Cột hàu");
+  let mocText = "";
   if (haThuyRow) {
     const kc = diffDays(haThuyRow.date, ymd(kst()));
-    haThuyText = `🚢 Tàu hạ thủy: ${haThuyRow.date} (được ${kc} ngày)\n`;
+    mocText += `🚢 Tàu hạ thủy: ${haThuyRow.date} (được ${kc} ngày)\n`;
+  }
+  if (cotHauRows.length) {
+    const dates = cotHauRows.map((r) => r.date).join(", ");
+    mocText += `🦪 Cột hàu: ${dates}\n`;
   }
 
-  let text = `🌊 TÌNH HÌNH CÁC ĐÁM - VỤ MÙA ${getSeasonDisplay()}\n${haThuyText}\n`;
+  let text = `🌊 TÌNH HÌNH CÁC ĐÁM - VỤ MÙA ${getSeasonDisplay()}\n${mocText}\n`;
 
   for (const dam of dams) {
     const cfg = DAMS_CONFIG[dam];
     const st = computeBaiState(objs, dam);
+    const thuocSt = computeThuocState(objs, dam);
 
     text += `📍 Bãi/Đám ${dam} [${cfg.loaiLuoi} - ${cfg.soDay} đường]:\n`;
     if (cfg.note) {
@@ -1594,9 +1705,12 @@ async function reportAllDamsStatus(chatId) {
       text += `  • Tách lưới: ${cfg.ngayTach}\n`;
     }
 
-    if (cfg.ngayThuocCuoi) {
-      const kcThuoc = diffDays(cfg.ngayThuocCuoi, ymd(kst()));
-      text += `  • Đi thuốc lần cuối: ${cfg.ngayThuocCuoi} (${kcThuoc} ngày trước)\n`;
+    if (thuocSt.progress > 0) {
+      text += `  • Đi thuốc: ⏳ Đang dỡ ${thuocSt.progress}/${thuocSt.max} đường (còn ${thuocSt.remain}đ | gần nhất: ${thuocSt.lastAnyDate})\n`;
+    } else if (thuocSt.lastCleanDate || cfg.ngayThuocCuoi) {
+      const dThuoc = thuocSt.lastCleanDate || cfg.ngayThuocCuoi;
+      const kcThuoc = diffDays(dThuoc, ymd(kst()));
+      text += `  • Đi thuốc lần cuối: ${dThuoc} (${kcThuoc} ngày trước)\n`;
     } else {
       text += `  • Đi thuốc: Chưa đi thuốc\n`;
     }
@@ -1889,7 +2003,9 @@ async function syncDamLatestDatesFromData(dam) {
   let latestThuoc = "";
   let latestTach = "";
   for (const o of objs) {
-    if (o.tinhHinh === "Đi thuốc" && o.date) latestThuoc = o.date;
+    if ((o.tinhHinh === "Đi thuốc" || o.tinhHinh === "Đi thuốc sạch") && o.date) {
+      latestThuoc = o.date;
+    }
     if (o.tinhHinh && o.tinhHinh.includes("Tách") && o.date) latestTach = o.date;
   }
 
@@ -2035,15 +2151,63 @@ async function handleCallbackQuery(cb) {
 
   if (!chatId) return;
 
-  // Đi thuốc
+  // Chọn bãi đi thuốc -> hiện Đi sạch hoặc Đi dỡ
+  if (data.startsWith("THUOC_PICK:")) {
+    const dam = data.split(":")[1];
+    const rows = await getSeasonDataRows();
+    const st = computeThuocState(rows.map(rowToObj), dam);
+    const cleanBtnText =
+      st.progress > 0
+        ? `✅ Đi nốt phần còn lại (${st.remain}đ)`
+        : `✅ Đi sạch hết (${st.max}đ)`;
+
+    const inline_keyboard = [
+      [{ text: cleanBtnText, callback_data: `THUOC_CLEAN:${dam}` }],
+      [{ text: "✂️ Đi dỡ (nhập số đường)", callback_data: `THUOC_PARTIAL_ASK:${dam}` }],
+      [{ text: "⬅️ Chọn bãi khác", callback_data: "SHOW:THUOC_MENU" }],
+    ];
+
+    const infoLine =
+      st.progress > 0
+        ? `\n⏳ Hiện đang đi dỡ: ${st.progress}/${st.max} đường (còn ${st.remain}đ)`
+        : "";
+
+    await send(
+      chatId,
+      `💊 ĐI THUỐC BÃI ${dam} (Tổng ${st.max} đường)${infoLine}\nChọn hình thức bên dưới:`,
+      { reply_markup: { inline_keyboard } }
+    );
+    return;
+  }
+
+  if (data.startsWith("THUOC_CLEAN:")) {
+    const dam = data.split(":")[1];
+    clearPendingEdit(chatId);
+    await recordDiThuoc([dam], kst(), chatId, userName, null);
+    return;
+  }
+
+  if (data.startsWith("THUOC_PARTIAL_ASK:")) {
+    const dam = data.split(":")[1];
+    const rows = await getSeasonDataRows();
+    const st = computeThuocState(rows.map(rowToObj), dam);
+    setPendingEdit(chatId, { mode: "THUOC_PARTIAL", bai: dam });
+    await send(
+      chatId,
+      `💊 ĐI THUỐC DỠ BÃI ${dam} (còn ${st.remain}/${st.max} đường)\nNhập số đường hôm nay đã đi thuốc (VD: 30 hoặc 30 15/11):`,
+      {
+        reply_markup: {
+          inline_keyboard: [[{ text: "❌ Hủy", callback_data: "CANCEL_ACTION" }]],
+        },
+      }
+    );
+    return;
+  }
+
+  // Đi thuốc trực tiếp (tương thích cũ)
   if (data.startsWith("THUOC:")) {
     const target = data.split(":")[1];
-    if (target === "ALL") {
-      const allDams = getActiveDams();
-      await recordDiThuoc(allDams, kst(), chatId, userName);
-    } else {
-      await recordDiThuoc([target], kst(), chatId, userName);
-    }
+    await recordDiThuoc([target], kst(), chatId, userName, null);
     return;
   }
 
@@ -2348,6 +2512,29 @@ async function handleTextMessage(msg) {
       clearPendingEdit(chatId);
       return applyEditRowDate(pEdit.rowNumber1Based, ymd(d), chatId);
     }
+    if (pEdit.mode === "THUOC_PARTIAL") {
+      const parts = textRaw.split(/\s+/);
+      let gDelta = null;
+      let dateToken = null;
+      for (const p of parts) {
+        if (/^\d+g$/i.test(p)) gDelta = Number(p.slice(0, -1));
+        else if (/^\d+$/.test(p) && !gDelta) gDelta = Number(p);
+        else if (/^\d+d$/i.test(p) || /^\d{1,2}\/\d{1,2}(\/\d{4})?$/.test(p)) {
+          dateToken = p;
+        }
+      }
+      if (!gDelta || gDelta <= 0) {
+        await send(
+          chatId,
+          "❌ Vui lòng nhập số đường đã đi thuốc (VD: 30 hoặc 30 15/11).",
+          { reply_markup: buildMainKeyboard() }
+        );
+        return;
+      }
+      clearPendingEdit(chatId);
+      const dateObj = parseCustomDate(dateToken, false);
+      return recordDiThuoc([pEdit.bai], dateObj, chatId, userName, gDelta);
+    }
     if (pEdit.mode === "EDIT_WORK") {
       const candidate = /^\d/.test(textRaw) ? `${pEdit.bai} ${textRaw}` : textRaw;
       const parsedEdit = parseWorkLine(candidate);
@@ -2472,22 +2659,27 @@ async function handleTextMessage(msg) {
     return recordTachLuoi(dam, dateObj, chatId, userName);
   }
 
-  // Đi thuốc
+  // Đi thuốc (hỗ trợ cả đi sạch và đi dỡ: thuoc A27 | thuoc A27 30 | thuoc A27 30g 15/11)
   if (/^(?:di\s*thuoc|thuoc)\s+/i.test(textRaw)) {
     const body = textRaw.replace(/^di\s*thuoc\s+/i, "").replace(/^thuoc\s+/i, "").trim();
     const parts = body.split(/\s+/);
     let dateToken = null;
+    let gDelta = null;
     const damList = [];
 
     for (const p of parts) {
       if (/^\d+d$/i.test(p) || /^\d{1,2}\/\d{1,2}(\/\d{4})?$/.test(p)) {
         dateToken = p;
+      } else if (/^\d+g$/i.test(p)) {
+        gDelta = Number(p.slice(0, -1));
+      } else if (/^\d+$/.test(p)) {
+        gDelta = Number(p);
       } else {
         damList.push(p.toUpperCase());
       }
     }
     const dateObj = parseCustomDate(dateToken, false);
-    return recordDiThuoc(damList.length ? damList : ["A"], dateObj, chatId, userName);
+    return recordDiThuoc(damList.length ? damList : ["A27"], dateObj, chatId, userName, gDelta);
   }
 
   // Tránh bão
