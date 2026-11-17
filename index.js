@@ -634,6 +634,9 @@ function buildMainKeyboard() {
 async function showStatsHubMenu(chatId) {
   const inline_keyboard = [
     [
+      { text: "📖 Tổng quan đầu vụ & Kabeki", callback_data: "STATS:OVERVIEW" },
+    ],
+    [
       { text: "📅 Thống kê tháng này", callback_data: "STATS:MONTH" },
       { text: "🔁 Thống kê theo Vòng", callback_data: "STATS:VONG" },
     ],
@@ -1571,38 +1574,26 @@ async function showTachLuoiMenu(chatId) {
   const objs = rows.map(rowToObj);
   const kbkStats = getKabekiStats(objs);
 
-  const inline_keyboard = [
-    [
-      { text: "🕸️ Tách 5 Kabeki", callback_data: "KABEKI_TACH:5" },
-      { text: "🕸️ Tách 10 Kabeki", callback_data: "KABEKI_TACH:10" },
-    ],
-    [
-      { text: "🕸️ Tách 20 Kabeki", callback_data: "KABEKI_TACH:20" },
-    ],
-  ];
-
+  const inline_keyboard = [];
   for (let i = 0; i < dams.length; i += 2) {
-    const row = [
-      { text: `🕸️ Tách Đám ${dams[i]}`, callback_data: `TACH:${dams[i]}` },
-    ];
+    const d1 = dams[i];
+    const row = [{ text: `🕸️ Tách từ Đám ${d1}`, callback_data: `TACH_FROM:${d1}` }];
     if (dams[i + 1]) {
-      row.push({
-        text: `🕸️ Tách Đám ${dams[i + 1]}`,
-        callback_data: `TACH:${dams[i + 1]}`,
-      });
+      const d2 = dams[i + 1];
+      row.push({ text: `🕸️ Tách từ Đám ${d2}`, callback_data: `TACH_FROM:${d2}` });
     }
     inline_keyboard.push(row);
   }
+  inline_keyboard.push([
+    { text: "🕸️ Tách từ Kho Kabeki chung", callback_data: "TACH_FROM:KABEKI" },
+  ]);
 
   const text =
-`🕸️ TÁCH LƯỚI & KABEKI (QUY TẮC 4 + 1)
-📦 Tổng Kabeki thả biển: ${kbkStats.totalKbk} kabeki (= ${kbkStats.totalLines} lưới)
-✅ Đã tách: ${kbkStats.splitKbk} kabeki | Chưa tách: ${kbkStats.remainKbk} kabeki
+`🕸️ TÁCH LƯỚI KABEKI (3 BƯỚC)
+📦 Tổng gốc: ${kbkStats.totalKbk} dây Kabeki (= ${kbkStats.totalLines} lưới)
+✅ Đã tách: ${kbkStats.splitKbk} dây | Chưa tách: ${kbkStats.remainKbk} dây
 
-• Gõ lệnh tách vào bãi cụ thể (4 đường sang bãi, 1 đường ở lại vị trí Kabeki):
-  VD: tach kabeki 10 B24
-  (B24 nhận 40 đường, 10 đường ở lại vị trí gốc Kabeki)
-• Hoặc bấm nhanh nút phía trên.`;
+👉 Bước 1: Chọn ĐÁM NGUỒN cần tách lưới bên dưới:`;
 
   await send(chatId, text, {
     reply_markup: { inline_keyboard },
@@ -1683,10 +1674,8 @@ async function reportAllDamsStatus(chatId) {
   const rows = await getSeasonDataRows();
   const objs = rows.map(rowToObj);
   const dams = getActiveDams();
-  const kbkCfg = DAMS_CONFIG["KABEKI"];
-  const kbkStats = getKabekiStats(objs);
 
-  if (!dams.length && !kbkCfg) {
+  if (!dams.length) {
     await send(
       chatId,
       `📋 Chưa có đám nào được thiết lập trong Vụ mùa ${getSeasonDisplay()}.\nBấm "📊 THỐNG KÊ MÙA VỤ" -> "➕ Thêm/Sửa Đám" để tạo đám nhanh nhé!`,
@@ -1694,6 +1683,66 @@ async function reportAllDamsStatus(chatId) {
     );
     return;
   }
+
+  const todayYmd = ymd(kst());
+  let text = `🌊 TÌNH HÌNH CÁC ĐÁM - VỤ ${getSeasonDisplay()}\n\n`;
+
+  for (const dam of dams) {
+    const cfg = DAMS_CONFIG[dam];
+    const st = computeBaiState(objs, dam);
+    const thuocSt = computeThuocState(objs, dam);
+
+    text += `📍 ${dam} (${cfg.soDay} đường):\n`;
+
+    // Cắt kim
+    if (st.cleanDone > 0 || st.progress > 0) {
+      let cutInfo = `Vòng ${st.currentVong} (${st.progress}/${st.max}đ)`;
+      if (st.lastCleanDate) {
+        const kcCut = diffDays(st.lastCleanDate, todayYmd);
+        const fc = addDaysYmd(st.lastCleanDate, CUT_INTERVAL_DAYS);
+        cutInfo += ` | Sạch gần nhất: ${st.lastCleanDate} (${kcCut} ngày) → Cắt lại: ${fc}`;
+      }
+      text += `  • ✂️ Cắt kim: ${cutInfo}\n`;
+    } else {
+      text += `  • ✂️ Cắt kim: Chưa cắt\n`;
+    }
+
+    // Đi thuốc
+    if (thuocSt.progress > 0) {
+      text += `  • 💊 Đi thuốc: Lần ${thuocSt.currentLan} (đang dỡ ${thuocSt.progress}/${thuocSt.max}đ)\n`;
+    } else if (thuocSt.lastCleanDate || cfg.ngayThuocCuoi) {
+      const dThuoc = thuocSt.lastCleanDate || cfg.ngayThuocCuoi;
+      const kcThuoc = diffDays(dThuoc, todayYmd);
+      const ddmm = `${dThuoc.slice(8, 10)}/${dThuoc.slice(5, 7)}`;
+      text += `  • 💊 Đi thuốc: Lần ${thuocSt.cleanCount} (${ddmm} - ${kcThuoc === 0 ? "Hôm nay" : `${kcThuoc} ngày trước`})\n`;
+    } else {
+      text += `  • 💊 Đi thuốc: Chưa đi\n`;
+    }
+    text += "\n";
+  }
+
+  const inline_keyboard = [
+    [
+      { text: "💊 Đi thuốc nhanh", callback_data: "SHOW:THUOC_MENU" },
+      { text: "📆 Xem lịch cắt", callback_data: "SHOW:CUT_SCHEDULE" },
+    ],
+    [
+      { text: "📖 Tổng quan đầu vụ & Kabeki", callback_data: "STATS:OVERVIEW" },
+      { text: "🔄 Làm mới", callback_data: "SHOW:STATUS_MENU" },
+    ],
+  ];
+
+  await send(chatId, text.trim(), {
+    reply_markup: { inline_keyboard },
+  });
+}
+
+async function reportOverviewAndKabeki(chatId) {
+  const rows = await getSeasonDataRows();
+  const objs = rows.map(rowToObj);
+  const dams = getActiveDams();
+  const kbkCfg = DAMS_CONFIG["KABEKI"];
+  const kbkStats = getKabekiStats(objs);
 
   const haThuyRow = objs.find((o) => o.tinhHinh === "Hạ thủy");
   const cotHauRows = objs.filter((o) => o.tinhHinh === "Cột hàu");
@@ -1707,82 +1756,38 @@ async function reportAllDamsStatus(chatId) {
     mocText += `🦪 Cột hàu: ${dates}\n`;
   }
 
-  let text = `🌊 TÌNH HÌNH CÁC ĐÁM - VỤ MÙA ${getSeasonDisplay()}\n${mocText}\n`;
+  let text = `📖 TỔNG QUAN ĐẦU VỤ & KABEKI (${getSeasonDisplay()})\n${mocText}\n`;
 
   for (const dam of dams) {
     const cfg = DAMS_CONFIG[dam];
-    const st = computeBaiState(objs, dam);
-    const thuocSt = computeThuocState(objs, dam);
-
-    text += `📍 Bãi/Đám ${dam} [${cfg.loaiLuoi} - ${cfg.soDay} đường]:\n`;
-    if (cfg.note) {
-      text += `  • Chi tiết: ${cfg.note}\n`;
-    }
-
+    text += `📍 ${dam} [${cfg.loaiLuoi} - ${cfg.soDay} đường]:\n`;
+    if (cfg.note) text += `  • Chi tiết: ${cfg.note}\n`;
     if (cfg.ngayTha) {
       const kcTha = diffDays(cfg.ngayTha, ymd(kst()));
-      text += `  • Thả lưới: ${cfg.ngayTha} (${kcTha} ngày trước)\n`;
-    } else {
-      text += `  • Thả lưới: Đang trên bãi\n`;
+      text += `  • Ngày thả: ${cfg.ngayTha} (${kcTha} ngày trước)\n`;
     }
-
     if (cfg.ngayTach) {
-      text += `  • Tách lưới: ${cfg.ngayTach}\n`;
-    }
-
-    if (thuocSt.progress > 0) {
-      text += `  • Đi thuốc: ⏳ Đang dỡ ${thuocSt.progress}/${thuocSt.max} đường (còn ${thuocSt.remain}đ | gần nhất: ${thuocSt.lastAnyDate})\n`;
-    } else if (thuocSt.lastCleanDate || cfg.ngayThuocCuoi) {
-      const dThuoc = thuocSt.lastCleanDate || cfg.ngayThuocCuoi;
-      const kcThuoc = diffDays(dThuoc, ymd(kst()));
-      text += `  • Đi thuốc lần cuối: ${dThuoc} (${kcThuoc} ngày trước)\n`;
-    } else {
-      text += `  • Đi thuốc: Chưa đi thuốc\n`;
-    }
-
-    if (st.cleanDone > 0 || st.progress > 0) {
-      text += `  • Thu hoạch: Đang ở VÒNG ${st.currentVong} (${st.progress}/${st.max} dây)\n`;
-      if (st.lastCleanDate) {
-        const fc = addDaysYmd(st.lastCleanDate, CUT_INTERVAL_DAYS);
-        text += `    ⤷ Dự kiến cắt lại: ${fc}\n`;
-      }
-    } else {
-      text += `  • Thu hoạch: Chưa cắt đợt nào\n`;
+      text += `  • Tách lưới gần nhất: ${cfg.ngayTach}\n`;
     }
     text += "\n";
   }
 
-  // KABEKI đặt ở PHÍA DƯỚI CÙNG
   if (kbkCfg) {
     text += `----------------------------------\n`;
-    text += `🕸️ KABEKI (Lưới 5 - Chờ tách):\n`;
-    text += `  • Tổng thả biển (giữ nguyên): ${kbkStats.totalKbk} kabeki (= ${kbkStats.totalLines} đường lưới)\n`;
-    if (kbkStats.splitKbk > 0) {
-      text += `  • Đã tách: ${kbkStats.splitKbk} kabeki (chuyển ${kbkStats.movedLines} đường | ở lại gốc ${kbkStats.stayLines} đường)\n`;
-      text += `  • Chờ tách: ${kbkStats.remainKbk} kabeki\n`;
-    }
-    if (kbkCfg.ngayThuocCuoi) {
-      const kcThuocKbk = diffDays(kbkCfg.ngayThuocCuoi, ymd(kst()));
-      text += `  • Đi thuốc Kabeki gần nhất: ${kbkCfg.ngayThuocCuoi} (${kcThuocKbk} ngày trước)\n`;
-    } else {
-      text += `  • Đi thuốc Kabeki: Chưa đi thuốc\n`;
-    }
+    text += `🕸️ KABEKI (Lưới 5):\n`;
+    text += `  • Tổng gốc thả biển (giữ nguyên): ${kbkStats.totalKbk} dây Kabeki (= ${kbkStats.totalLines} đường lưới)\n`;
+    text += `  • Đã tách: ${kbkStats.splitKbk} dây Kabeki (chuyển đi ${kbkStats.movedLines} đường | ở lại gốc ${kbkStats.stayLines} đường)\n`;
+    text += `  • Chưa tách còn lại: ${kbkStats.remainKbk} dây Kabeki\n`;
   }
 
   const inline_keyboard = [
     [
-      { text: "💊 Đi thuốc nhanh", callback_data: "SHOW:THUOC_MENU" },
-      { text: "🕸️ Tách lưới nhanh", callback_data: "SHOW:TACH_MENU" },
-    ],
-    [
-      { text: "📆 Xem lịch cắt", callback_data: "SHOW:CUT_SCHEDULE" },
-      { text: "🔄 Làm mới", callback_data: "SHOW:STATUS_MENU" },
+      { text: "🕸️ Tách lưới Kabeki", callback_data: "SHOW:TACH_MENU" },
+      { text: "📋 Tình hình cắt/thuốc", callback_data: "SHOW:STATUS_MENU" },
     ],
   ];
 
-  await send(chatId, text.trim(), {
-    reply_markup: { inline_keyboard },
-  });
+  await send(chatId, text.trim(), { reply_markup: { inline_keyboard } });
 }
 
 async function reportThuocStatus(chatId) {
@@ -2332,7 +2337,52 @@ async function handleCallbackQuery(cb) {
     return;
   }
 
-  // Tách Kabeki nhanh
+  // Bước 1 -> Bước 2 tách lưới: chọn Đám nguồn -> hỏi số dây Kabeki muốn tách
+  if (data.startsWith("TACH_FROM:")) {
+    const sourceDam = data.split(":")[1];
+    setPendingEdit(chatId, { mode: "TACH_ASK_COUNT", sourceDam });
+    await send(
+      chatId,
+      `🕸️ TÁCH LƯỚI TỪ ${sourceDam === "KABEKI" ? "KHO KABEKI" : `ĐÁM ${sourceDam}`}\n👉 Bước 2: Nhập **số dây Kabeki** bạn muốn tách (VD: 10):`,
+      {
+        reply_markup: {
+          inline_keyboard: [[{ text: "❌ Hủy", callback_data: "CANCEL_ACTION" }]],
+        },
+      }
+    );
+    return;
+  }
+
+  // Bước 3: Chọn Đám đích có sẵn
+  if (data.startsWith("TACH_TO:")) {
+    const parts = data.split(":");
+    const sourceDam = parts[1];
+    const count = Number(parts[2] || 0);
+    const destDam = parts[3];
+    clearPendingEdit(chatId);
+    await recordTachKabeki(count, destDam, kst(), chatId, userName, sourceDam);
+    return;
+  }
+
+  // Bước 3b: Tạo Đám đích MỚI
+  if (data.startsWith("TACH_TO_NEW:")) {
+    const parts = data.split(":");
+    const sourceDam = parts[1];
+    const count = Number(parts[2] || 0);
+    setPendingEdit(chatId, { mode: "TACH_NEW_DEST_NAME", sourceDam, count });
+    await send(
+      chatId,
+      `➕ TÁCH ${count} DÂY KABEKI SANG ĐÁM MỚI\nNhập tên Đám mới bạn muốn chuyển tới (VD: B24):`,
+      {
+        reply_markup: {
+          inline_keyboard: [[{ text: "❌ Hủy", callback_data: "CANCEL_ACTION" }]],
+        },
+      }
+    );
+    return;
+  }
+
+  // Tách Kabeki nhanh (tương thích cũ)
   if (data.startsWith("KABEKI_TACH:")) {
     const soKbk = Number(data.split(":")[1] || 0);
     await recordTachKabeki(soKbk, null, kst(), chatId, userName);
@@ -2409,6 +2459,7 @@ async function handleCallbackQuery(cb) {
   }
 
   // Thống kê mùa vụ hub callbacks
+  if (data === "STATS:OVERVIEW") return reportOverviewAndKabeki(chatId);
   if (data === "STATS:MONTH") return reportMonth(chatId);
   if (data === "STATS:VONG") return reportByVong(chatId);
   if (data === "STATS:SEASON") return reportSeasonTotal(chatId);
@@ -2649,6 +2700,69 @@ async function handleTextMessage(msg) {
   // ====== XỬ LÝ TRẠNG THÁI CHỜ SỬA (PENDING EDIT) ======
   const pEdit = getPendingEdit(chatId);
   if (pEdit) {
+    if (pEdit.mode === "TACH_ASK_COUNT") {
+      const count = Number(textRaw.trim());
+      if (!Number.isFinite(count) || count <= 0) {
+        await send(
+          chatId,
+          "❌ Vui lòng nhập số dây Kabeki muốn tách (VD: 10).",
+          { reply_markup: buildMainKeyboard() }
+        );
+        return;
+      }
+      clearPendingEdit(chatId);
+      const dams = getActiveDams();
+      const inline_keyboard = [];
+      for (let i = 0; i < dams.length; i += 2) {
+        const row = [
+          {
+            text: `➡️ Sang Đám ${dams[i]}`,
+            callback_data: `TACH_TO:${pEdit.sourceDam}:${count}:${dams[i]}`,
+          },
+        ];
+        if (dams[i + 1]) {
+          row.push({
+            text: `➡️ Sang Đám ${dams[i + 1]}`,
+            callback_data: `TACH_TO:${pEdit.sourceDam}:${count}:${dams[i + 1]}`,
+          });
+        }
+        inline_keyboard.push(row);
+      }
+      inline_keyboard.push([
+        {
+          text: "➕ Sang Đám MỚI (gõ tên, VD: B24)",
+          callback_data: `TACH_TO_NEW:${pEdit.sourceDam}:${count}`,
+        },
+      ]);
+      inline_keyboard.push([{ text: "❌ Hủy", callback_data: "CANCEL_ACTION" }]);
+
+      await send(
+        chatId,
+        `🕸️ ĐÃ CHỌN TÁCH ${count} DÂY KABEKI (từ ${pEdit.sourceDam})\n• Chuyển đi: ${count * 4} đường | Ở lại gốc: ${count} đường\n\n👉 Bước 3: Chọn **ĐÁM ĐÍCH** nhận ${count * 4} đường bên dưới:`,
+        { reply_markup: { inline_keyboard } }
+      );
+      return;
+    }
+
+    if (pEdit.mode === "TACH_NEW_DEST_NAME") {
+      const destDam = textRaw.trim().toUpperCase().replace(/\s+/g, "");
+      if (!destDam) {
+        await send(chatId, "❌ Vui lòng nhập tên đám mới (VD: B24).", {
+          reply_markup: buildMainKeyboard(),
+        });
+        return;
+      }
+      clearPendingEdit(chatId);
+      return recordTachKabeki(
+        pEdit.count,
+        destDam,
+        kst(),
+        chatId,
+        userName,
+        pEdit.sourceDam
+      );
+    }
+
     if (pEdit.mode === "EDIT_DATE") {
       const d = parseCustomDate(textRaw, false);
       clearPendingEdit(chatId);
