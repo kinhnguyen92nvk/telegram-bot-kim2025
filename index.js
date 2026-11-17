@@ -1185,9 +1185,12 @@ function computeThuocState(allObjs, dam) {
     (o) => o.bai === damU && isThuocRow(o)
   );
 
+  let cleanCount = 0;
   let progress = 0;
   let lastCleanDate = "";
   let lastAnyDate = "";
+  const rounds = []; // các lần đi thuốc đã hoàn thành: { lan, date, diffPrev }
+  let partialRows = []; // các đợt đi dỡ trong lần hiện tại
 
   for (const o of sorted) {
     lastAnyDate = o.date || lastAnyDate;
@@ -1196,20 +1199,29 @@ function computeThuocState(allObjs, dam) {
       o.tinhHinh === "Đi thuốc sạch" ||
       (o.dayG >= max && max > 0)
     ) {
-      progress = 0; // hoàn thành lượt thuốc, reset cho lượt tiếp theo
+      cleanCount += 1;
+      const diffPrev = lastCleanDate ? diffDays(lastCleanDate, o.date) : null;
+      rounds.push({ lan: cleanCount, date: o.date, diffPrev });
+      progress = 0;
+      partialRows = [];
       lastCleanDate = o.date || lastCleanDate;
     } else {
       progress = Math.min(max, Number(o.dayG || 0));
+      partialRows.push({ date: o.date, dayG: progress });
     }
   }
 
   return {
     dam: damU,
     max,
+    cleanCount,
+    currentLan: cleanCount + 1,
     progress,
     remain: Math.max(0, max - progress),
     lastCleanDate,
     lastAnyDate,
+    rounds,
+    partialRows,
   };
 }
 
@@ -1224,6 +1236,7 @@ async function recordDiThuoc(damList, dateObj, chatId, userName, gDelta = null) 
     const cfg = DAMS_CONFIG[damU] || {};
     const st = computeThuocState(objs, damU);
     const max = st.max;
+    const lan = st.currentLan;
 
     let newProgress;
     let tinhHinh;
@@ -1240,17 +1253,17 @@ async function recordDiThuoc(damList, dateObj, chatId, userName, gDelta = null) 
     if (tinhHinh === "Đi thuốc sạch") {
       if (st.lastCleanDate) {
         const kc = diffDays(st.lastCleanDate, dateYmd);
-        kcMsg = `Đi sạch (${newProgress}/${max}đ) - Cách lần trước ${kc} ngày (${st.lastCleanDate})`;
+        kcMsg = `Lần ${lan} (${newProgress}/${max}đ) - Cách Lần ${lan - 1} (${st.lastCleanDate}): ${kc} ngày`;
       } else if (cfg.ngayTha) {
         const kc = diffDays(cfg.ngayTha, dateYmd);
-        kcMsg = `Đi sạch (${newProgress}/${max}đ) - Lần đầu (sau thả ${kc} ngày)`;
+        kcMsg = `Lần 1 (${newProgress}/${max}đ) - Sau thả ${kc} ngày`;
       } else {
-        kcMsg = `Đi sạch (${newProgress}/${max}đ)`;
+        kcMsg = `Lần ${lan} (${newProgress}/${max}đ)`;
       }
       await upsertDamConfig(damU, { ngayThuocCuoi: dateYmd });
     } else {
       const remain = Math.max(0, max - newProgress);
-      kcMsg = `Đi dỡ ${newProgress}/${max}đ (còn ${remain}đ chưa đi)`;
+      kcMsg = `Lần ${lan} (Đi dỡ ${newProgress}/${max}đ - còn ${remain}đ)`;
     }
 
     await appendSeasonDataRow([
@@ -1790,31 +1803,29 @@ async function reportThuocStatus(chatId) {
   for (const dam of dams) {
     const cfg = DAMS_CONFIG[dam];
     const st = computeThuocState(objs, dam);
-    const thuocHistory = objs.filter((o) => o.bai === dam && isThuocRow(o));
 
-    text += `📍 Bãi ${dam} (${cfg?.soDay || st.max} đường):\n`;
+    text += `📍 Bãi ${dam} (${cfg?.soDay || st.max} đường)`;
+    if (st.cleanCount > 0) {
+      text += ` — Đã xong ${st.cleanCount} lần:\n`;
+    } else {
+      text += `:\n`;
+    }
+
+    if (st.rounds.length > 0) {
+      st.rounds.forEach((r) => {
+        const ddmm = r.date ? `${r.date.slice(8, 10)}/${r.date.slice(5, 7)}/${r.date.slice(0, 4)}` : "";
+        const diffStr = r.diffPrev != null ? ` (cách Lần ${r.lan - 1}: ${r.diffPrev} ngày)` : "";
+        text += `  • Lần ${r.lan}: ${ddmm}${diffStr}\n`;
+      });
+    }
 
     if (st.progress > 0) {
-      text += `  • Trạng thái: ⏳ Đang đi dỡ ${st.progress}/${st.max} đường (còn ${st.remain}đ)\n`;
-    }
-
-    if (st.lastCleanDate || cfg?.ngayThuocCuoi) {
-      const lastD = st.lastCleanDate || cfg.ngayThuocCuoi;
-      const kc = diffDays(lastD, todayYmd);
-      text += `  • Đi thuốc sạch gần nhất: ${lastD} (${kc === 0 ? "Hôm nay" : `${kc} ngày trước`})\n`;
-    } else if (thuocHistory.length === 0) {
-      text += `  • Chưa đi thuốc lần nào\n`;
-    }
-
-    if (thuocHistory.length > 0) {
-      const recentList = thuocHistory
-        .slice(-5)
-        .map((o) => {
-          const ddmm = o.date ? `${o.date.slice(8, 10)}/${o.date.slice(5, 7)}` : "";
-          return o.tinhHinh === "Đi thuốc dỡ" ? `${ddmm}(dỡ ${o.dayG}đ)` : ddmm;
-        })
-        .join(" → ");
-      text += `  • Lịch sử gần đây: ${recentList}\n`;
+      text += `  • Lần ${st.currentLan} (đang dỡ): ${st.progress}/${st.max} đường — còn ${st.remain}đ\n`;
+    } else if (st.lastCleanDate) {
+      const kc = diffDays(st.lastCleanDate, todayYmd);
+      text += `  ⤷ Lần gần nhất cách đây ${kc === 0 ? "0 ngày (Hôm nay)" : `${kc} ngày`} | Tiếp theo: Lần ${st.currentLan}\n`;
+    } else {
+      text += `  • Chưa đi thuốc lần nào (Sắp tới: Lần 1)\n`;
     }
     text += "\n";
   }
@@ -2284,7 +2295,7 @@ async function handleCallbackQuery(cb) {
 
     await send(
       chatId,
-      `💊 ĐI THUỐC BÃI ${dam} (Tổng ${st.max} đường)${infoLine}\nChọn hình thức bên dưới:`,
+      `💊 ĐI THUỐC BÃI ${dam} — LẦN ${st.currentLan} (Tổng ${st.max} đường)${infoLine}\nChọn hình thức bên dưới:`,
       { reply_markup: { inline_keyboard } }
     );
     return;
